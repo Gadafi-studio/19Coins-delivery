@@ -1341,22 +1341,39 @@ function renderRestaurant(){
   list.innerHTML=html;
 }
 
-function updateStatus(id,status){
+async async async function updateStatus(id,status){
   var o=orders.find(function(o){return o.id===id;});
   if(!o)return;
   o.status=status;
   if(status==='delivered'){completedCount++;revenue+=o.total;}
-  saveOrders();
   renderRestaurant();renderTracking();updateKitchenBadge();
   showToast('Order #'+id+' → '+(statusLabels[status]||status));
+  try{
+    await db.from('orders').update({status:status}).eq('id',id);
+    await db.from('kitchen_queue').update({status:status}).eq('order_id',id);
+    if(status==='out_for_delivery'){
+      await db.from('deliveries').insert([{order_id:id,status:'in_transit',assigned_at:new Date().toISOString()}]);
+    }
+    if(status==='delivered'){
+      await db.from('deliveries').update({status:'delivered',delivered_at:new Date().toISOString()}).eq('order_id',id);
+      await db.from('payments').update({status:'completed'}).eq('order_id',id);
+    }
+    console.log('Order #'+id+' updated in Supabase to '+status);
+  }catch(e){console.error('updateStatus error:',e);}
 }
 
-function assignDriver(id){
+async async function assignDriver(id){
   var o=orders.find(function(o){return o.id===id;});
   if(!o)return;
   o.status='out_for_delivery';
   renderRestaurant();renderTracking();updateDriverPanel();
   showToast('Driver assigned to #'+id);
+  try{
+    await db.from('orders').update({status:'out_for_delivery'}).eq('id',id);
+    await db.from('kitchen_queue').update({status:'out_for_delivery'}).eq('order_id',id);
+    await db.from('deliveries').insert([{order_id:id,status:'in_transit',assigned_at:new Date().toISOString()}]);
+    console.log('Driver assigned in Supabase for #'+id);
+  }catch(e){console.error('assignDriver error:',e);}
 }
 
 function updateStats(){
@@ -1661,48 +1678,58 @@ function sendRealMpesaPayment(){
   document.getElementById('pinSection').style.display = 'none';
   document.getElementById('pinProcessing').style.display = 'block';
 
-  // Format phone for IntaSend (254XXXXXXXXX)
+  // Format phone
   var phone = currentOrderPhone.toString().replace(/\s/g,'');
-  if(phone.startsWith('0')) phone = '254' + phone.substring(1);
-  if(phone.startsWith('+')) phone = phone.substring(1);
 
-  console.log('Sending STK Push to:', phone, 'Amount:', currentOrderAmount);
+  console.log('Calling swift-handler for STK Push...');
+  console.log('Phone:', phone, 'Amount:', currentOrderAmount, 'Order:', currentOrderId);
 
-  // Call IntaSend M-Pesa STK Push API directly
-  fetch('https://payment.intasend.com/api/v1/payment/mpesa-stk-push/', {
+  // Call Supabase Edge Function (swift-handler) to send real STK Push
+  fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ISPubKey_live_4db2603b-058f-44a9-8206-d85f640dcd21'
+      'Authorization': 'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'
     },
     body: JSON.stringify({
-      public_key: 'ISPubKey_live_4db2603b-058f-44a9-8206-d85f640dcd21',
-      currency: 'KES',
+      phone: phone,
       amount: currentOrderAmount,
-      phone_number: phone,
-      api_ref: String(currentOrderId),
-      comment: '19Coins Hotel Order #' + currentOrderId
+      order_id: currentOrderId
     })
   })
   .then(function(res){ return res.json(); })
   .then(function(data){
-    console.log('STK Push response:', JSON.stringify(data));
-    if(data.invoice && data.invoice.invoice_id){
+    console.log('Swift-handler response:', JSON.stringify(data));
+    if(data.success){
       showToast('STK Push sent! Check your phone 📱');
-      pollPaymentStatus(data.invoice.invoice_id);
-    } else if(data.tracking_id){
-      showToast('STK Push sent! Check your phone 📱');
-      pollPaymentStatus(data.tracking_id);
+      document.getElementById('pinProcessing').innerHTML =
+        '<div style="font-size:2rem;margin-bottom:8px">📱</div>' +
+        '<div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>' +
+        '<div style="font-size:.78rem;color:#666;margin-bottom:12px">Check your phone and enter your M-Pesa PIN</div>' +
+        '<div style="display:flex;align-items:center;justify-content:center;gap:8px">' +
+        '<div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>' +
+        '<div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>' +
+        '<br><button onclick="confirmMpesa()" style="margin-top:10px;padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700">I have paid ✓</button>';
+      // Poll for payment status
+      if(data.invoice_id){
+        pollPaymentStatus(data.invoice_id);
+      }
     } else {
-      console.log('STK response:', data);
-      showToast('Check your phone for M-Pesa prompt! 📱');
-      startPaymentTimer();
+      console.error('STK Push failed:', data.message);
+      showToast('STK Push failed: ' + (data.message || 'Try again'));
+      document.getElementById('pinSection').style.display = 'block';
+      document.getElementById('pinProcessing').style.display = 'none';
+      mpesaPin = '';
+      updatePinDots();
     }
   })
   .catch(function(err){
-    console.error('STK Push error:', err);
-    showToast('Check your phone for M-Pesa prompt! 📱');
-    startPaymentTimer();
+    console.error('Swift-handler error:', err);
+    showToast('Network error - check connection');
+    document.getElementById('pinSection').style.display = 'block';
+    document.getElementById('pinProcessing').style.display = 'none';
+    mpesaPin = '';
+    updatePinDots();
   });
 }
 
