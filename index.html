@@ -1244,24 +1244,43 @@ function getCustomerGPS(){
 // ══════════════════════════════════════
 //  PLACE ORDER
 // ══════════════════════════════════════
-function placeOrder(){
+async function placeOrder(){
   var name=document.getElementById('custName').value.trim();
   var phone=document.getElementById('custPhone').value.trim();
   var address=document.getElementById('custAddress').value.trim();
   if(!name||!phone||!address){showToast('Please fill all details');return;}
   if(!cart.length){showToast('Cart is empty');return;}
   var sub=cart.reduce(function(s,i){return s+i.price*i.qty;},0);
+
+  showToast('Placing your order...');
+
   var order={
-    id:++orderIdCounter,customer:name,phone:phone,address:address,
-    branch:selectedBranch,items:cart.slice(),total:sub+80,
-    payment:selectedPayment,status:'pending',gps:customerGPS,
+    customer:name, phone:phone, address:address,
+    branch:selectedBranch, items:cart.slice(), total:sub+80,
+    payment:selectedPayment, status:'pending', gps:customerGPS,
     time:new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})
   };
+
+  // Save to Supabase database
+  var savedId = await saveOrderToDB(order);
+
+  if(savedId){
+    order.id = savedId;
+    showToast('Order #'+savedId+' placed successfully!');
+    console.log('Order saved to Supabase with ID:', savedId);
+  } else {
+    order.id = ++orderIdCounter;
+    showToast('Order #'+order.id+' placed! (offline mode)');
+    console.log('Supabase save failed - offline mode');
+  }
+
   orders.unshift(order);
-  saveOrders();
   cart=[];
-  updateCartUI();closeCart();renderTracking();updateKitchenBadge();
-  showToast('Order #'+order.id+' placed!');
+  updateCartUI();
+  closeCart();
+  renderTracking();
+  updateKitchenBadge();
+
   if(selectedPayment==='mpesa'){
     setTimeout(function(){showMpesaPopup(phone, sub+80, order.id);},1000);
   }
