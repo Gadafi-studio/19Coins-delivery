@@ -514,6 +514,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--dark);color:var(--white);
     <button class="staff-btn" onclick="openLogin('driver')" style="background:rgba(201,168,76,0.08);border-color:rgba(201,168,76,0.3);color:var(--muted)">🛵 Driver Login</button>
     <button class="staff-btn" onclick="openLogin('admin')" style="background:rgba(201,168,76,0.08);border-color:rgba(201,168,76,0.3);color:var(--muted)">⚙️ Admin</button>
   </div>
+  <div style="text-align:center;padding:16px 0 24px;position:relative;z-index:2;border-top:1px solid rgba(201,168,76,0.1);margin-top:8px">
+    <div style="font-size:.72rem;color:#555;letter-spacing:1px">Powered by</div>
+    <div style="font-size:.88rem;font-weight:700;color:#C9A84C;margin-top:3px">© Gadafi Developers</div>
+    <div style="font-size:.65rem;color:#444;margin-top:2px">Building Digital Solutions for Africa</div>
+  </div>
 </div>
 
 <!-- ══ LOGIN ══ -->
@@ -926,11 +931,33 @@ var catLabels = {
 // ══════════════════════════════════════
 //  APP STATE
 // ══════════════════════════════════════
-var CREDENTIALS = {
-  kitchen:{username:'kitchen19',password:'coins2024'},
-  driver:{username:'driver19',password:'deliver24'},
-  admin:{username:'admin19',password:'admin2024'}
-};
+// ══════════════════════════════════════
+//  MULTI-USER STAFF ACCOUNTS
+// ══════════════════════════════════════
+var STAFF_ACCOUNTS = [
+  // ADMIN
+  {id:'admin1', username:'admin19', password:'admin2024', role:'admin', name:'Admin', branch:'all'},
+
+  // KITCHEN STAFF - ISIOLO
+  {id:'k_isiolo1', username:'kitchen.isiolo', password:'isiolo2024', role:'kitchen', name:'Kitchen Isiolo', branch:'Isiolo'},
+  {id:'k_isiolo2', username:'chef.isiolo', password:'chef1234', role:'kitchen', name:'Chef Isiolo', branch:'Isiolo'},
+
+  // KITCHEN STAFF - MERU
+  {id:'k_meru1', username:'kitchen.meru', password:'meru2024', role:'kitchen', name:'Kitchen Meru', branch:'Meru'},
+  {id:'k_meru2', username:'chef.meru', password:'chef5678', role:'kitchen', name:'Chef Meru', branch:'Meru'},
+
+  // DRIVERS - ISIOLO
+  {id:'d_isiolo1', username:'driver1.isiolo', password:'drive001', role:'driver', name:'Driver 1 Isiolo', branch:'Isiolo'},
+  {id:'d_isiolo2', username:'driver2.isiolo', password:'drive002', role:'driver', name:'Driver 2 Isiolo', branch:'Isiolo'},
+  {id:'d_isiolo3', username:'driver3.isiolo', password:'drive003', role:'driver', name:'Driver 3 Isiolo', branch:'Isiolo'},
+
+  // DRIVERS - MERU
+  {id:'d_meru1', username:'driver1.meru', password:'drive101', role:'driver', name:'Driver 1 Meru', branch:'Meru'},
+  {id:'d_meru2', username:'driver2.meru', password:'drive102', role:'driver', name:'Driver 2 Meru', branch:'Meru'},
+  {id:'d_meru3', username:'driver3.meru', password:'drive103', role:'driver', name:'Driver 3 Meru', branch:'Meru'},
+];
+
+var currentStaffUser = null;
 var cart=[], orders=[], selectedPayment='mpesa', selectedBranch='Isiolo';
 var currentOrderTab='pending', currentBranchFilter='all';
 var orderIdCounter=1000, completedCount=0, revenue=0, activeCategory='all';
@@ -985,17 +1012,35 @@ function selectLoginRole(tab,role){
 function doLogin(){
   var user=document.getElementById('loginUsername').value.trim();
   var pass=document.getElementById('loginPassword').value.trim();
-  var cred=CREDENTIALS[loginTargetRole];
-  if(user===cred.username&&pass===cred.password){
-    currentRole=loginTargetRole;
+
+  // Find matching staff account
+  var account = STAFF_ACCOUNTS.find(function(a){
+    return a.username===user && a.password===pass &&
+      (loginTargetRole==='admin' ? a.role==='admin' : a.role===loginTargetRole);
+  });
+
+  if(account){
+    currentRole = account.role;
+    currentStaffUser = account;
+    // Set branch based on staff account
+    if(account.branch !== 'all'){
+      selectedBranch = account.branch;
+      var branchEl = document.getElementById('activeBranch');
+      if(branchEl) branchEl.textContent = account.branch;
+    }
     document.getElementById('loginScreen').className='login-screen';
     document.getElementById('landing').style.display='none';
     document.getElementById('mainApp').className='app open';
-    showStaffPanel(loginTargetRole);
-    showToast('Welcome! Logged in as '+loginTargetRole);
+    showStaffPanel(account.role);
+    showToast('Welcome '+account.name+'!');
+    // Filter orders by branch automatically
+    if(account.branch !== 'all'){
+      currentBranchFilter = account.branch;
+    }
   } else {
     var err=document.getElementById('loginError');
     err.style.display='block';
+    err.textContent='Invalid username or password';
     setTimeout(function(){err.style.display='none';},3000);
   }
 }
@@ -1007,10 +1052,11 @@ function showStaffPanel(role){
   var badge=document.getElementById('userBadge');
   badge.className='user-badge show';
   var dot=document.getElementById('userRoleDot');
-  var name=document.getElementById('userBadgeName');
-  if(role==='kitchen'){dot.className='user-role-dot role-kitchen';name.textContent='Kitchen';}
-  if(role==='driver'){dot.className='user-role-dot role-driver';name.textContent='Driver';}
-  if(role==='admin'){dot.className='user-role-dot role-admin';name.textContent='Admin';}
+  var nameEl=document.getElementById('userBadgeName');
+  var displayName = currentStaffUser ? currentStaffUser.name : role;
+  if(role==='kitchen'){dot.className='user-role-dot role-kitchen';nameEl.textContent=displayName;}
+  if(role==='driver'){dot.className='user-role-dot role-driver';nameEl.textContent=displayName;}
+  if(role==='admin'){dot.className='user-role-dot role-admin';nameEl.textContent=displayName;}
   var panelMap={kitchen:'restaurant',driver:'driver',admin:'admin'};
   var tabMap={
     kitchen:document.getElementById('tab-restaurant'),
@@ -1022,6 +1068,8 @@ function showStaffPanel(role){
 
 function logoutStaff(){
   currentRole=null;
+  currentStaffUser=null;
+  currentBranchFilter='all';
   document.getElementById('tab-restaurant').className='nav-tab hidden';
   document.getElementById('tab-driver').className='nav-tab hidden';
   document.getElementById('tab-admin').className='nav-tab hidden';
@@ -1659,6 +1707,46 @@ function setupRealtime(){
       }
     }catch(e){}
   },15000);
+}
+
+function switchAdminTab(btn, tab){
+  document.querySelectorAll('#panel-admin .order-tab').forEach(function(t){t.classList.remove('active');});
+  btn.classList.add('active');
+  if(tab==='menu'){
+    document.getElementById('itemForm').style.display='none';
+    document.getElementById('adminMenuList').style.display='block';
+    document.getElementById('staffPanel').style.display='none';
+    document.querySelector('.add-item-btn').style.display='block';
+  } else {
+    document.getElementById('itemForm').style.display='none';
+    document.getElementById('adminMenuList').style.display='none';
+    document.getElementById('staffPanel').style.display='block';
+    document.querySelector('.add-item-btn').style.display='none';
+    renderStaffList();
+  }
+}
+
+function renderStaffList(){
+  var list = document.getElementById('staffList');
+  var roleColors = {admin:'#C9A84C', kitchen:'#5A9BE0', driver:'#4CAF7D'};
+  var html = '';
+  var branches = ['all','Isiolo','Meru'];
+  branches.forEach(function(branch){
+    var branchAccounts = STAFF_ACCOUNTS.filter(function(a){return a.branch===branch;});
+    if(!branchAccounts.length) return;
+    html += '<div style="font-size:.72rem;font-weight:700;color:var(--brown3);text-transform:uppercase;letter-spacing:1px;padding:10px 0 6px;border-top:1px solid var(--dark3)">'+(branch==='all'?'Admin':branch+' Branch')+'</div>';
+    branchAccounts.forEach(function(account){
+      html += '<div style="background:var(--dark2);border-radius:10px;padding:12px;margin-bottom:8px;border:1px solid var(--dark3)">';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+      html += '<div style="font-weight:600;font-size:.85rem">'+account.name+'</div>';
+      html += '<span style="padding:3px 8px;border-radius:12px;font-size:.65rem;font-weight:700;background:'+roleColors[account.role]+'20;color:'+roleColors[account.role]+'">'+account.role.toUpperCase()+'</span>';
+      html += '</div>';
+      html += '<div style="font-size:.75rem;color:var(--muted)">Username: <span style="color:var(--white)">'+account.username+'</span></div>';
+      html += '<div style="font-size:.75rem;color:var(--muted)">Password: <span style="color:var(--white)">'+account.password+'</span></div>';
+      html += '</div>';
+    });
+  });
+  list.innerHTML = html;
 }
 
 function showToast(msg){
