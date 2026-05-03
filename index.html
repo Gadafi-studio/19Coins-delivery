@@ -451,7 +451,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--dark);color:var(--white);
 .toast{position:fixed;bottom:78px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--dark2);border:1px solid var(--gold);border-radius:10px;padding:10px 16px;font-size:.8rem;z-index:500;opacity:0;transition:.3s;pointer-events:none;white-space:nowrap;max-width:90vw;text-align:center;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- IntaSend uses direct REST API - no SDK needed -->
 </head>
 <body>
@@ -756,23 +756,101 @@ body{font-family:'DM Sans',sans-serif;background:var(--dark);color:var(--white);
 
 <script>
 // ══════════════════════════════════════
-//  DATA
+//  SUPABASE SETUP
 // ══════════════════════════════════════
-var CREDENTIALS = {
-  kitchen:{username:'kitchen19',password:'coins2024'},
-  driver:{username:'driver19',password:'deliver24'},
-  admin:{username:'admin19',password:'admin2024'}
-};
+var SUPABASE_URL = 'https://aubkxxezzoprpmluwlau.supabase.co';
+var SUPABASE_KEY = 'sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD';
+var db = null;
 
-var deals = [
-  {day:'Monday',name:'Easy Monday',desc:'Get 2 delicious burgers for only KSh 500!',price:500,emoji:'🍔'},
-  {day:'Tuesday',name:'Terrific Tuesday',desc:'Buy 1 large or medium pizza and get another one FREE!',price:1000,emoji:'🍕'},
-  {day:'Wednesday',name:'Crush Wednesday',desc:'Get 3 pieces of juicy chicken and chips for only KSh 450!',price:450,emoji:'🍗'},
-  {day:'Thursday',name:'Cheers Thursday',desc:'2 large/medium pizzas + 1.25L soda for KSh 1200!',price:1200,emoji:'🍕'},
-  {day:'Friday',name:'Furahi Friday',desc:'Buy 1 Mega Pizza and get 500ml soda absolutely FREE!',price:1250,emoji:'🍕'},
-  {day:'Saturday',name:'Super Sato',desc:'1 large pizza + 3 pieces chicken + 2L soda for KSh 1500!',price:1500,emoji:'🎉'}
-];
+function initSupabase(){
+  try{
+    db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    console.log('Supabase connected!');
+    loadOrdersFromDB();
+  }catch(e){
+    console.error('Supabase error:',e);
+    setTimeout(initSupabase, 1000);
+  }
+}
 
+// ══════════════════════════════════════
+//  DATABASE FUNCTIONS
+// ══════════════════════════════════════
+async function saveOrderToDB(order){
+  if(!db){ console.error('DB not ready'); return null; }
+  try{
+    var res = await db.from('orders').insert([{
+      customer_name: order.customer,
+      phone: order.phone,
+      delivery_address: order.address,
+      branch_name: order.branch,
+      total_price: order.total,
+      payment_method: order.payment,
+      status: 'pending',
+      gps_lat: order.gps ? order.gps.lat : null,
+      gps_lng: order.gps ? order.gps.lng : null
+    }]).select();
+    if(res.error){ console.error('Order save error:',res.error.message); return null; }
+    var dbOrder = res.data[0];
+    var items = order.items.map(function(item){
+      return {order_id:dbOrder.id, product_id:item.id, quantity:item.qty, price:item.price};
+    });
+    await db.from('order_items').insert(items);
+    await db.from('kitchen_queue').insert([{order_id:dbOrder.id, status:'pending'}]);
+    await db.from('payments').insert([{order_id:dbOrder.id, method:order.payment, amount:order.total, status:order.payment==='cash'?'completed':'pending'}]);
+    console.log('Order saved! ID:', dbOrder.id);
+    return dbOrder.id;
+  }catch(e){ console.error('saveOrderToDB:',e); return null; }
+}
+
+async function updateOrderInDB(id, status){
+  if(!db) return;
+  try{
+    await db.from('orders').update({status:status}).eq('id',id);
+    await db.from('kitchen_queue').update({status:status}).eq('order_id',id);
+    if(status==='out_for_delivery'){
+      await db.from('deliveries').insert([{order_id:id,status:'in_transit',assigned_at:new Date().toISOString()}]);
+    }
+    if(status==='delivered'){
+      await db.from('deliveries').update({status:'delivered',delivered_at:new Date().toISOString()}).eq('order_id',id);
+      await db.from('payments').update({status:'completed'}).eq('order_id',id);
+    }
+    console.log('Order #'+id+' updated to '+status);
+  }catch(e){ console.error('updateOrderInDB:',e); }
+}
+
+async function loadOrdersFromDB(){
+  if(!db){ console.error('DB not ready'); return; }
+  try{
+    var res = await db.from('orders').select('*').order('created_at',{ascending:false});
+    if(res.error){ console.error('Load error:',res.error.message); return; }
+    for(var i=0;i<res.data.length;i++){
+      var o = res.data[i];
+      var itemRes = await db.from('order_items').select('*').eq('order_id',o.id);
+      o.items = (itemRes.data||[]).map(function(it){
+        var m = menuItems.find(function(x){ return x.id===it.product_id; });
+        return {id:it.product_id, name:m?m.name:'Item', emoji:m?m.emoji:'🍽️', price:it.price, qty:it.quantity};
+      });
+      o.customer = o.customer_name;
+      o.address = o.delivery_address||'';
+      o.branch = o.branch_name||'Isiolo';
+      o.total = o.total_price;
+      o.payment = o.payment_method||'mpesa';
+      o.gps = o.gps_lat?{lat:o.gps_lat,lng:o.gps_lng}:null;
+      o.time = new Date(o.created_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
+    }
+    orders = res.data;
+    renderTracking();
+    renderRestaurant();
+    updateKitchenBadge();
+    updateStats();
+    console.log('Loaded '+orders.length+' orders from Supabase');
+  }catch(e){ console.error('loadOrdersFromDB:',e); }
+}
+
+// ══════════════════════════════════════
+//  MENU DATA
+// ══════════════════════════════════════
 var menuItems = [
   {id:1,name:'Cream of Tomato Garlic Soup',emoji:'🍅',price:200,desc:'Rich creamy tomato soup',cat:'soup'},
   {id:2,name:'Cream of Mushroom Soup',emoji:'🍄',price:200,desc:'Creamy mushroom soup',cat:'soup'},
@@ -830,108 +908,38 @@ var menuItems = [
   {id:54,name:'Cake 1KG',emoji:'🎂',price:1500,desc:'Custom cake 1KG',cat:'desserts'}
 ];
 
-var catLabels={soup:'Soups',plains:'Plains',vegs:'Cooked Vegs',chicken:'Kuku Kienyeji',pastry:'Pastry Corner',lahmandi:'Lahmandi Full Pack',desserts:'Desserts & Cakes'};
-var emojis=['🍅','🍄','🎃','🥦','🍗','🍚','🫓','🍝','🫘','🥜','🍖','🍌','🥗','🌽','🥬','🌿','🫛','🥧','🌭','🥐','🧁','🍫','🍊','🎂','🍪','💍','💕','👨‍👩‍👧‍👦','🥩','🐟','🥤','🍵','🍔','🍕'];
-// Load saved orders from localStorage
-function loadOrders(){
-  try{
-    var saved=localStorage.getItem('19coins_orders');
-    return saved?JSON.parse(saved):[];
-  }catch(e){return [];}
-}
-function saveOrders(){
-  try{ localStorage.setItem('19coins_orders',JSON.stringify(orders)); }catch(e){}
-}
+var deals = [
+  {day:'Monday',name:'Easy Monday',desc:'Get 2 delicious burgers for only KSh 500!',price:500,emoji:'🍔'},
+  {day:'Tuesday',name:'Terrific Tuesday',desc:'Buy 1 large or medium pizza and get another one FREE!',price:1000,emoji:'🍕'},
+  {day:'Wednesday',name:'Crush Wednesday',desc:'Get 3 pieces of juicy chicken and chips for only KSh 450!',price:450,emoji:'🍗'},
+  {day:'Thursday',name:'Cheers Thursday',desc:'2 large/medium pizzas + 1.25L soda for KSh 1200!',price:1200,emoji:'🍕'},
+  {day:'Friday',name:'Furahi Friday',desc:'Buy 1 Mega Pizza and get 500ml soda absolutely FREE!',price:1250,emoji:'🍕'},
+  {day:'Saturday',name:'Super Sato',desc:'1 large pizza + 3 pieces chicken + 2L soda for KSh 1500!',price:1500,emoji:'🎉'}
+];
+
+var catLabels = {
+  soup:'Soups', plains:'Plains', vegs:'Cooked Vegs',
+  chicken:'Kuku Kienyeji', pastry:'Pastry Corner',
+  lahmandi:'Lahmandi Full Pack', desserts:'Desserts & Cakes'
+};
+
 // ══════════════════════════════════════
-//  SUPABASE SETUP — REPLACE KEY BELOW
+//  APP STATE
 // ══════════════════════════════════════
-var SUPABASE_URL = 'https://aubkxxezzoprpmluwlau.supabase.co';
-var SUPABASE_KEY = 'sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD';
-var db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-var cart=[],orders=[],selectedPayment='mpesa',selectedBranch='Isiolo';
-
-async function saveOrderToDB(order){
-  try{
-    var res = await db.from('orders').insert([{
-      customer_name: order.customer,
-      phone: order.phone,
-      delivery_address: order.address,
-      branch_name: order.branch,
-      total_price: order.total,
-      payment_method: order.payment,
-      status: 'pending',
-      gps_lat: order.gps ? order.gps.lat : null,
-      gps_lng: order.gps ? order.gps.lng : null
-    }]).select();
-    if(res.error){ console.error('Order error:',res.error.message); return null; }
-    var dbOrder = res.data[0];
-    var items = order.items.map(function(item){
-      return { order_id: dbOrder.id, product_id: item.id, quantity: item.qty, price: item.price };
-    });
-    await db.from('order_items').insert(items);
-    await db.from('kitchen_queue').insert([{ order_id: dbOrder.id, status: 'pending' }]);
-    await db.from('payments').insert([{ order_id: dbOrder.id, method: order.payment, amount: order.total, status: order.payment==='cash'?'completed':'pending' }]);
-    return dbOrder.id;
-  }catch(e){ console.error('saveOrderToDB:',e); return null; }
-}
-
-async function updateOrderInDB(orderId, newStatus){
-  try{
-    await db.from('orders').update({status:newStatus}).eq('id', orderId);
-    await db.from('kitchen_queue').update({status:newStatus}).eq('order_id', orderId);
-    if(newStatus==='out_for_delivery'){
-      await db.from('deliveries').insert([{ order_id:orderId, status:'in_transit', assigned_at:new Date().toISOString() }]);
-    }
-    if(newStatus==='delivered'){
-      await db.from('deliveries').update({status:'delivered', delivered_at:new Date().toISOString()}).eq('order_id', orderId);
-      await db.from('payments').update({status:'completed'}).eq('order_id', orderId);
-    }
-  }catch(e){ console.error('updateOrderInDB:',e); }
-}
-
-async function loadOrdersFromDB(){
-  try{
-    var res = await db.from('orders').select('*').order('created_at',{ascending:false});
-    if(res.error){ console.error('Load error:',res.error.message); return; }
-    for(var i=0;i<res.data.length;i++){
-      var o = res.data[i];
-      var itemRes = await db.from('order_items').select('*').eq('order_id', o.id);
-      o.items = (itemRes.data||[]).map(function(it){
-        var m = menuItems.find(function(x){ return x.id===it.product_id; });
-        return { id:it.product_id, name:m?m.name:'Item', emoji:m?m.emoji:'🍽️', price:it.price, qty:it.quantity };
-      });
-      o.customer = o.customer_name;
-      o.address = o.delivery_address||'';
-      o.branch = o.branch_name||'Isiolo';
-      o.total = o.total_price;
-      o.payment = o.payment_method||'mpesa';
-      o.gps = o.gps_lat?{lat:o.gps_lat,lng:o.gps_lng}:null;
-      o.time = new Date(o.created_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
-    }
-    orders = res.data;
-    renderTracking(); renderRestaurant(); updateKitchenBadge(); updateStats();
-  }catch(e){ console.error('loadOrdersFromDB:',e); }
-}
-
-function setupRealtime(){
-  // Realtime disabled for local files - using polling instead
-  // Polls every 15 seconds when kitchen panel is active
-  setInterval(function(){
-    try {
-      var kitchenPanel = document.getElementById('panel-restaurant');
-      if(kitchenPanel && kitchenPanel.classList.contains('active')){
-        loadOrdersFromDB();
-      }
-    } catch(e){}
-  }, 15000);
-  console.log('Polling active - checks every 15 seconds');
-}
-var currentOrderTab='pending',currentBranchFilter='all';
-var orderIdCounter=1000,completedCount=0,revenue=0,activeCategory='all';
-var selectedEmoji='🍽️',editingId=null,customerGPS=null,loginTargetRole='kitchen',currentRole=null;
+var CREDENTIALS = {
+  kitchen:{username:'kitchen19',password:'coins2024'},
+  driver:{username:'driver19',password:'deliver24'},
+  admin:{username:'admin19',password:'admin2024'}
+};
+var cart=[], orders=[], selectedPayment='mpesa', selectedBranch='Isiolo';
+var currentOrderTab='pending', currentBranchFilter='all';
+var orderIdCounter=1000, completedCount=0, revenue=0, activeCategory='all';
+var selectedEmoji='🍽️', editingId=null, customerGPS=null;
+var loginTargetRole='kitchen', currentRole=null;
+var mpesaPin='', currentOrderPhone='', currentOrderAmount=0, currentOrderId=null;
 var statusFlow=['pending','preparing','ready','out_for_delivery','delivered'];
 var statusLabels={pending:'Pending',preparing:'Preparing',ready:'Ready',out_for_delivery:'On the Way',delivered:'Delivered'};
+var emojis=['🍅','🍄','🎃','🥦','🍗','🍚','🫓','🍝','🫘','🥜','🍖','🍌','🥗','🌽','🥬','🌿','🫛','🥧','🌭','🥐','🧁','🍫','🍊','🎂','🍪','💍','💕','👨‍👩‍👧‍👦','🥩','🐟','🥤','🍵','🍔','🍕'];
 
 // ══════════════════════════════════════
 //  LANDING
@@ -964,14 +972,14 @@ function openLogin(role){
     var roles=['kitchen','driver','admin'];
     t.className='login-role-tab'+(roles[i]===role?' active':'');
   });
-  document.getElementById('loginSubtitle').textContent=role==='kitchen'?'Kitchen Staff Access':role==='driver'?'Driver Access':'Admin Access';
+  document.getElementById('loginSubtitle').textContent=
+    role==='kitchen'?'Kitchen Staff Access':role==='driver'?'Driver Access':'Admin Access';
 }
 
 function selectLoginRole(tab,role){
   loginTargetRole=role;
   document.querySelectorAll('.login-role-tab').forEach(function(t){t.className='login-role-tab';});
   tab.className='login-role-tab active';
-  document.getElementById('loginSubtitle').textContent=role==='kitchen'?'Kitchen Staff Access':role==='driver'?'Driver Access':'Admin Access';
 }
 
 function doLogin(){
@@ -1004,7 +1012,11 @@ function showStaffPanel(role){
   if(role==='driver'){dot.className='user-role-dot role-driver';name.textContent='Driver';}
   if(role==='admin'){dot.className='user-role-dot role-admin';name.textContent='Admin';}
   var panelMap={kitchen:'restaurant',driver:'driver',admin:'admin'};
-  var tabMap={kitchen:document.getElementById('tab-restaurant'),driver:document.getElementById('tab-driver'),admin:document.getElementById('tab-admin')};
+  var tabMap={
+    kitchen:document.getElementById('tab-restaurant'),
+    driver:document.getElementById('tab-driver'),
+    admin:document.getElementById('tab-admin')
+  };
   switchPanel(panelMap[role],tabMap[role]);
 }
 
@@ -1019,6 +1031,7 @@ function logoutStaff(){
 }
 
 function cancelLogin(){document.getElementById('loginScreen').className='login-screen';}
+
 function goHome(){
   document.getElementById('mainApp').className='app';
   document.getElementById('landing').style.display='';
@@ -1029,24 +1042,24 @@ function goHome(){
 // ══════════════════════════════════════
 function renderDeals(){
   var grid=document.getElementById('dealsGrid');
+  if(!grid) return;
   var today=new Date().toLocaleDateString('en-US',{weekday:'long'});
   var html='';
   deals.forEach(function(deal){
     var isToday=deal.day===today;
     html+='<div class="deal-card">';
     html+='<div class="deal-card-img">'+deal.emoji+'<div class="deal-day-badge">'+(isToday?'TODAY':deal.day)+'</div></div>';
-    html+='<div class="deal-card-info">';
-    html+='<div class="deal-card-name">'+deal.name+'</div>';
+    html+='<div class="deal-card-info"><div class="deal-card-name">'+deal.name+'</div>';
     html+='<div class="deal-card-desc">'+deal.desc+'</div>';
     html+='<div class="deal-card-footer"><span class="deal-card-price">KSh '+deal.price.toLocaleString()+'</span>';
-    html+='<button class="deal-claim-btn" onclick="claimDeal(\''+deal.name+'\','+deal.price+')">Claim Now</button>';
+    html+='<button class="deal-claim-btn" onclick="claimDeal()">Claim Now</button>';
     html+='</div></div></div>';
   });
   grid.innerHTML=html;
 }
 
-function claimDeal(name,price){
-  showToast('Deal added! Place your order to claim.');
+function claimDeal(){
+  showToast('Add items to cart to place order!');
 }
 
 // ══════════════════════════════════════
@@ -1054,12 +1067,14 @@ function claimDeal(name,price){
 // ══════════════════════════════════════
 function switchPanel(name,btn){
   document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active');});
-  document.querySelectorAll('.nav-tab').forEach(function(t){if(!t.classList.contains('hidden'))t.classList.remove('active');});
+  document.querySelectorAll('.nav-tab').forEach(function(t){
+    if(!t.classList.contains('hidden')) t.classList.remove('active');
+  });
   document.getElementById('panel-'+name).classList.add('active');
-  if(btn)btn.classList.add('active');
-  if(name==='restaurant')renderRestaurant();
-  if(name==='driver')updateDriverPanel();
-  if(name==='admin')renderAdminMenu();
+  if(btn) btn.classList.add('active');
+  if(name==='restaurant') renderRestaurant();
+  if(name==='driver') updateDriverPanel();
+  if(name==='admin') renderAdminMenu();
 }
 
 // ══════════════════════════════════════
@@ -1067,6 +1082,7 @@ function switchPanel(name,btn){
 // ══════════════════════════════════════
 function renderMenu(items){
   var grid=document.getElementById('menuGrid');
+  if(!grid) return;
   if(!items.length){grid.innerHTML='<div class="empty-state"><p>No items found</p></div>';return;}
   var cats=[];
   items.forEach(function(i){if(cats.indexOf(i.cat)===-1)cats.push(i.cat);});
@@ -1162,82 +1178,36 @@ function selectPayment(el,method){
 // ══════════════════════════════════════
 function getCustomerGPS(){
   var btn=document.getElementById('gpsBtn');
-  btn.textContent='Getting location...';
-  btn.disabled=true;
-
-  // Check if we are in a secure context
-  if(window.location.protocol !== 'https:' && window.location.hostname !== 'localhost'){
-    // Try anyway but warn
-    showToast('For best GPS results use HTTPS');
-  }
-
+  btn.textContent='Getting location...';btn.disabled=true;
   if(!navigator.geolocation){
-    showToast('GPS not supported on this browser');
-    btn.textContent='GPS Not Supported';
-    btn.disabled=false;
-    return;
+    showToast('GPS not supported');btn.textContent='GPS Not Supported';btn.disabled=false;return;
   }
-
-  // First try with high accuracy
-  var gpsOptions = {
-    enableHighAccuracy: true,
-    timeout: 15000,
-    maximumAge: 0
-  };
-
   navigator.geolocation.getCurrentPosition(
     function(pos){
-      var lat = pos.coords.latitude.toFixed(6);
-      var lng = pos.coords.longitude.toFixed(6);
-      var acc = Math.round(pos.coords.accuracy);
-      customerGPS = {lat:lat, lng:lng, accuracy:acc};
-      btn.textContent = 'GPS Location Captured!';
-      btn.className = 'gps-btn got';
-      btn.disabled = false;
-      document.getElementById('gpsCard').className = 'gps-card show';
-      document.getElementById('gpsCoordsDisplay').textContent = 'Lat: '+lat+', Lng: '+lng;
-      document.getElementById('gpsAccuracy').textContent = 'Accuracy: ~'+acc+' meters';
-      var addr = document.getElementById('custAddress');
-      if(!addr.value.trim()) addr.value = 'GPS: '+lat+', '+lng;
+      var lat=pos.coords.latitude.toFixed(6);
+      var lng=pos.coords.longitude.toFixed(6);
+      var acc=Math.round(pos.coords.accuracy);
+      customerGPS={lat:lat,lng:lng,accuracy:acc};
+      btn.textContent='GPS Location Captured!';btn.className='gps-btn got';btn.disabled=false;
+      document.getElementById('gpsCard').className='gps-card show';
+      document.getElementById('gpsCoordsDisplay').textContent='Lat: '+lat+', Lng: '+lng;
+      document.getElementById('gpsAccuracy').textContent='Accuracy: ~'+acc+' meters';
+      var addr=document.getElementById('custAddress');
+      if(!addr.value.trim())addr.value='GPS: '+lat+', '+lng;
       showToast('GPS location captured!');
     },
     function(err){
-      // If high accuracy fails, try low accuracy
-      if(err.code === 1){
-        btn.textContent = 'Use My GPS Location';
-        btn.disabled = false;
-        showToast('Please allow location in browser settings');
-        // Show instructions
-        document.getElementById('gpsCard').className = 'gps-card show';
-        document.getElementById('gpsCoordsDisplay').textContent = 'Permission denied';
-        document.getElementById('gpsAccuracy').textContent = 'Go to browser Settings → Site Settings → Location → Allow';
+      btn.textContent='Use My GPS Location';btn.disabled=false;
+      if(err.code===1){
+        showToast('Allow location in browser settings');
+        document.getElementById('gpsCard').className='gps-card show';
+        document.getElementById('gpsCoordsDisplay').textContent='Permission denied';
+        document.getElementById('gpsAccuracy').textContent='Go to Settings > Site Settings > Location > Allow';
       } else {
-        // Try with low accuracy as fallback
-        navigator.geolocation.getCurrentPosition(
-          function(pos){
-            var lat = pos.coords.latitude.toFixed(6);
-            var lng = pos.coords.longitude.toFixed(6);
-            customerGPS = {lat:lat, lng:lng, accuracy:999};
-            btn.textContent = 'GPS Location Captured!';
-            btn.className = 'gps-btn got';
-            btn.disabled = false;
-            document.getElementById('gpsCard').className = 'gps-card show';
-            document.getElementById('gpsCoordsDisplay').textContent = 'Lat: '+lat+', Lng: '+lng;
-            document.getElementById('gpsAccuracy').textContent = 'Low accuracy mode';
-            var addr = document.getElementById('custAddress');
-            if(!addr.value.trim()) addr.value = 'GPS: '+lat+', '+lng;
-            showToast('GPS location captured!');
-          },
-          function(err2){
-            btn.textContent = 'Use My GPS Location';
-            btn.disabled = false;
-            showToast('Could not get location. Type address manually.');
-          },
-          {enableHighAccuracy:false, timeout:10000, maximumAge:60000}
-        );
+        showToast('Could not get location. Type address manually.');
       }
     },
-    gpsOptions
+    {enableHighAccuracy:true,timeout:15000,maximumAge:0}
   );
 }
 
@@ -1251,38 +1221,26 @@ async function placeOrder(){
   if(!name||!phone||!address){showToast('Please fill all details');return;}
   if(!cart.length){showToast('Cart is empty');return;}
   var sub=cart.reduce(function(s,i){return s+i.price*i.qty;},0);
-
   showToast('Placing your order...');
-
   var order={
     customer:name, phone:phone, address:address,
     branch:selectedBranch, items:cart.slice(), total:sub+80,
     payment:selectedPayment, status:'pending', gps:customerGPS,
     time:new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})
   };
-
-  // Save to Supabase database
   var savedId = await saveOrderToDB(order);
-
   if(savedId){
-    order.id = savedId;
-    showToast('Order #'+savedId+' placed successfully!');
-    console.log('Order saved to Supabase with ID:', savedId);
+    order.id=savedId;
+    showToast('Order #'+savedId+' placed!');
   } else {
-    order.id = ++orderIdCounter;
-    showToast('Order #'+order.id+' placed! (offline mode)');
-    console.log('Supabase save failed - offline mode');
+    order.id=++orderIdCounter;
+    showToast('Order #'+order.id+' placed (offline)');
   }
-
   orders.unshift(order);
   cart=[];
-  updateCartUI();
-  closeCart();
-  renderTracking();
-  updateKitchenBadge();
-
+  updateCartUI();closeCart();renderTracking();updateKitchenBadge();
   if(selectedPayment==='mpesa'){
-    setTimeout(function(){showMpesaPopup(phone, sub+80, order.id);},1000);
+    setTimeout(function(){showMpesaPopup(phone,sub+80,order.id);},1000);
   }
 }
 
@@ -1300,11 +1258,12 @@ function renderTracking(){
     steps.forEach(function(s,i){
       var cls=i<idx?'done':(i===idx?'active':'');
       var line=i<steps.length-1?'<div class="step-line '+(i<idx?'done':'')+'"></div>':'';
-      stHtml+='<div class="step '+cls+'"><div class="step-dot">'+(i<idx?'✓':i+1)+'</div><div class="step-label">'+s+'</div></div>'+line;
+      stHtml+='<div class="step '+cls+'"><div class="step-dot">'+(i<idx?'v':i+1)+'</div><div class="step-label">'+s+'</div></div>'+line;
     });
     var sc={pending:'status-pending',preparing:'status-preparing',ready:'status-ready',out_for_delivery:'status-preparing',delivered:'status-delivered'}[order.status]||'';
     html+='<div class="tracking-card"><div class="tracking-header">';
-    html+='<div><b style="font-size:.9rem">Order #'+order.id+'</b><div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+'</div></div>';
+    html+='<div><b style="font-size:.9rem">Order #'+order.id+'</b>';
+    html+='<div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+'</div></div>';
     html+='<span class="order-status '+sc+'">'+(statusLabels[order.status]||order.status)+'</span></div>';
     html+='<div style="font-size:.76rem;color:var(--muted);margin-bottom:10px">'+order.items.map(function(i){return i.emoji+' '+i.name+' x'+i.qty;}).join(' · ')+'</div>';
     html+='<div class="progress-steps">'+stHtml+'</div></div>';
@@ -1313,7 +1272,7 @@ function renderTracking(){
 }
 
 // ══════════════════════════════════════
-//  RESTAURANT
+//  RESTAURANT / KITCHEN
 // ══════════════════════════════════════
 function renderRestaurant(){
   updateStats();
@@ -1321,59 +1280,57 @@ function renderRestaurant(){
   var filtered=orders.filter(function(o){
     return (currentBranchFilter==='all'||o.branch===currentBranchFilter)&&o.status===currentOrderTab;
   });
-  if(!filtered.length){list.innerHTML='<div class="empty-state"><p>No '+currentOrderTab+' orders</p></div>';return;}
+  if(!filtered.length){
+    list.innerHTML='<div class="empty-state"><p>No '+currentOrderTab+' orders</p></div>';return;
+  }
   var html='';
   filtered.forEach(function(order){
     var actions='';
-    if(order.status==='pending')actions='<button class="action-btn btn-accept" onclick="updateStatus('+order.id+',\'preparing\')">Accept</button><button class="action-btn btn-reject" onclick="updateStatus('+order.id+',\'rejected\')">Reject</button>';
-    else if(order.status==='preparing')actions='<button class="action-btn btn-ready" onclick="updateStatus('+order.id+',\'ready\')">Ready</button>';
-    else if(order.status==='ready')actions='<button class="action-btn btn-assign" onclick="assignDriver('+order.id+')">Assign Driver</button>';
+    if(order.status==='pending'){
+      actions='<button class="action-btn btn-accept" onclick="updateStatus(\''+order.id+'\',\'preparing\')">Accept</button>';
+      actions+='<button class="action-btn btn-reject" onclick="updateStatus(\''+order.id+'\',\'rejected\')">Reject</button>';
+    } else if(order.status==='preparing'){
+      actions='<button class="action-btn btn-ready" onclick="updateStatus(\''+order.id+'\',\'ready\')">Ready</button>';
+    } else if(order.status==='ready'){
+      actions='<button class="action-btn btn-assign" onclick="assignDriver(\''+order.id+'\')">Assign Driver</button>';
+    }
     var gpsHtml='';
-    if(order.gps)gpsHtml='<div style="font-size:.7rem;color:var(--success);margin-bottom:6px">📍 GPS: '+order.gps.lat+', '+order.gps.lng+' <a href="https://www.google.com/maps?q='+order.gps.lat+','+order.gps.lng+'" target="_blank" style="color:var(--gold)">Maps</a></div>';
+    if(order.gps){
+      gpsHtml='<div style="font-size:.7rem;color:#4CAF7D;margin-bottom:6px">GPS: '+order.gps.lat+', '+order.gps.lng+
+        ' <a href="https://www.google.com/maps?q='+order.gps.lat+','+order.gps.lng+'" target="_blank" style="color:#C9A84C">Open Maps</a></div>';
+    }
     html+='<div class="order-card"><div class="order-card-header">';
-    html+='<div><b style="font-size:.9rem">'+order.customer+'</b><div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+' · '+order.phone+'</div></div>';
+    html+='<div><b style="font-size:.9rem">'+order.customer+'</b>';
+    html+='<div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+' · '+order.phone+'</div></div>';
     html+='<span style="font-size:.76rem;color:var(--gold);font-weight:700">#'+order.id+'</span></div>';
-    html+='<div class="order-items-list">'+order.items.map(function(i){return '<div class="order-item-row"><span>'+i.emoji+' '+i.name+'</span><span>x'+i.qty+' KSh '+(i.price*i.qty).toLocaleString()+'</span></div>';}).join('')+'</div>';
-    html+='<div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">📍 '+order.address+'</div>'+gpsHtml;
+    html+='<div class="order-items-list">'+order.items.map(function(i){
+      return '<div class="order-item-row"><span>'+i.emoji+' '+i.name+'</span><span>x'+i.qty+' KSh '+(i.price*i.qty).toLocaleString()+'</span></div>';
+    }).join('')+'</div>';
+    html+='<div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">'+order.address+'</div>';
+    html+=gpsHtml;
     html+='<div class="order-footer"><div style="color:var(--gold);font-weight:700;font-size:.9rem">KSh '+order.total.toLocaleString()+' · '+order.payment.toUpperCase()+'</div>';
     html+='<div class="order-actions">'+actions+'</div></div></div>';
   });
   list.innerHTML=html;
 }
 
-async async async function updateStatus(id,status){
-  var o=orders.find(function(o){return o.id===id;});
+async function updateStatus(id,status){
+  var o=orders.find(function(o){return o.id==id;});
   if(!o)return;
   o.status=status;
   if(status==='delivered'){completedCount++;revenue+=o.total;}
   renderRestaurant();renderTracking();updateKitchenBadge();
-  showToast('Order #'+id+' → '+(statusLabels[status]||status));
-  try{
-    await db.from('orders').update({status:status}).eq('id',id);
-    await db.from('kitchen_queue').update({status:status}).eq('order_id',id);
-    if(status==='out_for_delivery'){
-      await db.from('deliveries').insert([{order_id:id,status:'in_transit',assigned_at:new Date().toISOString()}]);
-    }
-    if(status==='delivered'){
-      await db.from('deliveries').update({status:'delivered',delivered_at:new Date().toISOString()}).eq('order_id',id);
-      await db.from('payments').update({status:'completed'}).eq('order_id',id);
-    }
-    console.log('Order #'+id+' updated in Supabase to '+status);
-  }catch(e){console.error('updateStatus error:',e);}
+  showToast('Order #'+id+' updated!');
+  await updateOrderInDB(id,status);
 }
 
-async async function assignDriver(id){
-  var o=orders.find(function(o){return o.id===id;});
+async function assignDriver(id){
+  var o=orders.find(function(o){return o.id==id;});
   if(!o)return;
   o.status='out_for_delivery';
   renderRestaurant();renderTracking();updateDriverPanel();
   showToast('Driver assigned to #'+id);
-  try{
-    await db.from('orders').update({status:'out_for_delivery'}).eq('id',id);
-    await db.from('kitchen_queue').update({status:'out_for_delivery'}).eq('order_id',id);
-    await db.from('deliveries').insert([{order_id:id,status:'in_transit',assigned_at:new Date().toISOString()}]);
-    console.log('Driver assigned in Supabase for #'+id);
-  }catch(e){console.error('assignDriver error:',e);}
+  await updateOrderInDB(id,'out_for_delivery');
 }
 
 function updateStats(){
@@ -1394,11 +1351,12 @@ function filterBranch(btn,branch){
 }
 
 function updateKitchenBadge(){
-  document.getElementById('kitchenDot').style.display=orders.filter(function(o){return o.status==='pending';}).length>0?'inline-block':'none';
+  var dot=document.getElementById('kitchenDot');
+  if(dot) dot.style.display=orders.filter(function(o){return o.status==='pending';}).length>0?'inline-block':'none';
 }
 
 // ══════════════════════════════════════
-//  DRIVER + GOOGLE MAPS
+//  DRIVER
 // ══════════════════════════════════════
 function updateDriverPanel(){
   var active=orders.find(function(o){return o.status==='out_for_delivery';});
@@ -1414,13 +1372,9 @@ function updateDriverPanel(){
     document.getElementById('driverActionBtn').onclick=function(){confirmDelivery(active.id);};
     if(active.gps){
       document.getElementById('customerGPSInfo').style.display='block';
-      document.getElementById('driverSeesGPS').textContent='Lat: '+active.gps.lat+'  Lng: '+active.gps.lng;
+      document.getElementById('driverSeesGPS').textContent='Lat: '+active.gps.lat+' Lng: '+active.gps.lng;
       var mapsUrl='https://www.google.com/maps/dir/?api=1&destination='+active.gps.lat+','+active.gps.lng+'&travelmode=driving';
       document.getElementById('openMapsLink').href=mapsUrl;
-      var openBtn=document.getElementById('openMapsBtn');
-      if(openBtn){openBtn.style.display='inline-block';openBtn.href=mapsUrl;}
-      document.getElementById('routeStepsBox').style.display='block';
-      document.getElementById('routeStepsList').innerHTML='<div class="route-step"><span>↑</span><span class="step-text">Head to customer location</span><span style="color:var(--gold);font-size:.7rem">GPS Active</span></div><div class="route-step"><span>📍</span><span class="step-text">Customer GPS coordinates loaded</span><span style="color:var(--success);font-size:.7rem">Live</span></div>';
       loadGoogleMaps(active.gps.lat,active.gps.lng);
     }
   } else {
@@ -1428,7 +1382,6 @@ function updateDriverPanel(){
     document.getElementById('driverOrderItems').textContent='Waiting for order...';
     document.getElementById('driverAmount').textContent='--';
     document.getElementById('customerGPSInfo').style.display='none';
-    document.getElementById('routeStepsBox').style.display='none';
     document.getElementById('etaNum').textContent='--';
     document.getElementById('distLeft').textContent='-- km';
     document.getElementById('driverSpeed').textContent='';
@@ -1436,78 +1389,48 @@ function updateDriverPanel(){
   }
 }
 
-var driverGPS = null;
-
-function loadGoogleMaps(custLat, custLng){
-  var mapDiv = document.getElementById('googleMap');
-  var lat = parseFloat(custLat);
-  var lng = parseFloat(custLng);
-
-  // 19Coins Isiolo restaurant coordinates
-  var restLat = 0.3556;
-  var restLng = 37.5822;
-
-  // Show loading state
-  mapDiv.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;background:#141414"><div style="font-size:2rem">🗺️</div><div style="color:#C9A84C;font-size:.85rem">Loading map...</div></div>';
-
-  // Try to get driver real location first
+function loadGoogleMaps(custLat,custLng){
+  var mapDiv=document.getElementById('googleMap');
+  var lat=parseFloat(custLat);
+  var lng=parseFloat(custLng);
+  var restLat=0.3556;var restLng=37.5822;
+  mapDiv.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;background:#141414"><div style="font-size:2rem">🗺️</div><div style="color:#C9A84C;font-size:.85rem">Loading map...</div></div>';
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
       function(pos){
-        var dLat = pos.coords.latitude;
-        var dLng = pos.coords.longitude;
-        // Show real route from driver location to customer
-        var embedSrc = 'https://maps.google.com/maps?saddr='+dLat+','+dLng+'&daddr='+lat+','+lng+'&output=embed&t=m';
-        mapDiv.innerHTML = '<iframe width="100%" height="100%" frameborder="0" scrolling="no" marginheight="0" marginwidth="0" src="'+embedSrc+'"></iframe>';
-        // Navigation link from driver to customer
-        var navUrl = 'https://www.google.com/maps/dir/?api=1&origin='+dLat+','+dLng+'&destination='+lat+','+lng+'&travelmode=driving';
-        document.getElementById('openMapsLink').href = navUrl;
-        document.getElementById('customerGPSInfo').style.display = 'block';
-        document.getElementById('driverSeesGPS').textContent = 'Lat: '+lat+' Lng: '+lng;
-        document.getElementById('etaNum').textContent = '~15';
-        document.getElementById('distLeft').textContent = 'See map';
-        showToast('Route loaded from your location!');
+        var dLat=pos.coords.latitude;var dLng=pos.coords.longitude;
+        var src='https://maps.google.com/maps?saddr='+dLat+','+dLng+'&daddr='+lat+','+lng+'&output=embed&t=m';
+        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
+        var navUrl='https://www.google.com/maps/dir/?api=1&origin='+dLat+','+dLng+'&destination='+lat+','+lng+'&travelmode=driving';
+        document.getElementById('openMapsLink').href=navUrl;
       },
       function(){
-        // Fallback: show map centered on customer location
-        var embedSrc = 'https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
-        mapDiv.innerHTML = '<iframe width="100%" height="100%" frameborder="0" scrolling="no" src="'+embedSrc+'"></iframe>';
-        var navUrl = 'https://www.google.com/maps/dir/?api=1&origin='+restLat+','+restLng+'&destination='+lat+','+lng+'&travelmode=driving';
-        document.getElementById('openMapsLink').href = navUrl;
-        document.getElementById('customerGPSInfo').style.display = 'block';
-        document.getElementById('driverSeesGPS').textContent = 'Lat: '+lat+' Lng: '+lng;
-        document.getElementById('etaNum').textContent = '~15';
-        document.getElementById('distLeft').textContent = 'See map';
+        var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
+        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
       },
-      {enableHighAccuracy:true, timeout:8000, maximumAge:0}
+      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
     );
   } else {
-    // No geolocation - show customer location only
-    var embedSrc = 'https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
-    mapDiv.innerHTML = '<iframe width="100%" height="100%" frameborder="0" scrolling="no" src="'+embedSrc+'"></iframe>';
-    document.getElementById('openMapsLink').href = 'https://www.google.com/maps?q='+lat+','+lng;
-    document.getElementById('etaNum').textContent = '~15';
+    var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
+    mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
   }
 }
 
-function confirmDelivery(id){
+async function confirmDelivery(id){
   if(!id){showToast('No active delivery');return;}
-  updateStatus(id,'delivered');
+  await updateStatus(id,'delivered');
   document.getElementById('driverCustomerName').textContent='Delivered!';
   document.getElementById('driverOrderItems').textContent='Awaiting next order';
   document.getElementById('driverAmount').textContent='--';
   document.getElementById('customerGPSInfo').style.display='none';
-  document.getElementById('routeStepsBox').style.display='none';
-  document.getElementById('googleMap').innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;background:#141414"><div style="font-size:3rem">✅</div><div style="color:#C9A84C;font-size:.9rem">Delivery complete! Awaiting next order.</div></div>';
-  showToast('Delivery confirmed! Great job!');
+  document.getElementById('googleMap').innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;background:#141414"><div style="font-size:3rem">✅</div><div style="color:#C9A84C;font-size:.9rem">Delivery complete!</div></div>';
+  showToast('Delivery confirmed!');
 }
 
 function callCustomer(){
   var a=orders.find(function(o){return o.status==='out_for_delivery';});
-  if(a){
-    window.location.href='tel:'+a.phone;
-    showToast('Calling '+a.customer+'...');
-  } else showToast('No active delivery');
+  if(a) window.location.href='tel:'+a.phone;
+  else showToast('No active delivery');
 }
 
 // ══════════════════════════════════════
@@ -1609,205 +1532,133 @@ function selectBranch(btn,branch){
   showToast('Branch: '+branch);
 }
 
-
-var mpesaPin = '';
-var currentOrderPhone = '';
-var currentOrderAmount = 0;
-var currentOrderId = null;
-var intaSendInstance = null;
-
-function intaSendLoadFailed(){
-  console.log('IntaSend CDN failed - using direct API mode');
-  intaSendInstance = 'direct';
-}
-
-function initIntaSend(){
-  try {
-    console.log('IntaSend SDK loaded successfully!');
-    intaSendInstance = 'direct';
-  } catch(e){
-    console.error('IntaSend init error:', e);
-    intaSendInstance = 'direct';
-  }
-}
-
-function showMpesaPopup(phone, amount, orderId){
-  currentOrderPhone = phone;
-  currentOrderAmount = amount;
-  currentOrderId = orderId;
-  mpesaPin = '';
-  updatePinDots();
-  document.getElementById('mpesaPhoneDisplay').textContent = phone;
-  document.getElementById('mpesaAmountDisplay').textContent = amount.toLocaleString();
-  document.getElementById('pinSection').style.display = 'block';
-  document.getElementById('pinProcessing').style.display = 'none';
-  document.getElementById('pinSuccess').style.display = 'none';
-  document.getElementById('mpesaPopup').style.display = 'flex';
+// ══════════════════════════════════════
+//  MPESA PAYMENT
+// ══════════════════════════════════════
+function showMpesaPopup(phone,amount,orderId){
+  currentOrderPhone=phone;currentOrderAmount=amount;currentOrderId=orderId;
+  mpesaPin='';updatePinDots();
+  document.getElementById('mpesaPhoneDisplay').textContent=phone;
+  document.getElementById('mpesaAmountDisplay').textContent=amount.toLocaleString();
+  document.getElementById('pinSection').style.display='block';
+  document.getElementById('pinProcessing').style.display='none';
+  document.getElementById('pinSuccess').style.display='none';
+  document.getElementById('mpesaPopup').style.display='flex';
 }
 
 function pinPress(num){
-  if(mpesaPin.length >= 4) return;
-  mpesaPin += num.toString();
-  updatePinDots();
-  if(mpesaPin.length === 4){
-    setTimeout(function(){ sendRealMpesaPayment(); }, 300);
-  }
+  if(mpesaPin.length>=4)return;
+  mpesaPin+=num.toString();updatePinDots();
+  if(mpesaPin.length===4){setTimeout(function(){sendRealMpesaPayment();},300);}
 }
 
-function pinDelete(){
-  mpesaPin = mpesaPin.slice(0,-1);
-  updatePinDots();
-}
+function pinDelete(){mpesaPin=mpesaPin.slice(0,-1);updatePinDots();}
 
 function updatePinDots(){
   for(var i=1;i<=4;i++){
-    var dot = document.getElementById('pd'+i);
+    var dot=document.getElementById('pd'+i);
     if(dot){
-      if(i <= mpesaPin.length){
-        dot.style.background = '#00a651';
-        dot.style.borderColor = '#00a651';
-      } else {
-        dot.style.background = '#fff';
-        dot.style.borderColor = '#ccc';
-      }
+      dot.style.background=i<=mpesaPin.length?'#00a651':'#fff';
+      dot.style.borderColor=i<=mpesaPin.length?'#00a651':'#ccc';
     }
   }
 }
 
 function sendRealMpesaPayment(){
-  document.getElementById('pinSection').style.display = 'none';
-  document.getElementById('pinProcessing').style.display = 'block';
-
-  // Format phone
-  var phone = currentOrderPhone.toString().replace(/\s/g,'');
-
-  console.log('Calling swift-handler for STK Push...');
-  console.log('Phone:', phone, 'Amount:', currentOrderAmount, 'Order:', currentOrderId);
-
-  // Call Supabase Edge Function (swift-handler) to send real STK Push
-  fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'
+  document.getElementById('pinSection').style.display='none';
+  document.getElementById('pinProcessing').style.display='block';
+  var phone=currentOrderPhone.toString().replace(/\s/g,'');
+  console.log('Sending STK Push via swift-handler...');
+  fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'
     },
-    body: JSON.stringify({
-      phone: phone,
-      amount: currentOrderAmount,
-      order_id: currentOrderId
-    })
+    body:JSON.stringify({phone:phone,amount:currentOrderAmount,order_id:currentOrderId})
   })
-  .then(function(res){ return res.json(); })
+  .then(function(res){return res.json();})
   .then(function(data){
-    console.log('Swift-handler response:', JSON.stringify(data));
+    console.log('STK response:',JSON.stringify(data));
     if(data.success){
-      showToast('STK Push sent! Check your phone 📱');
-      document.getElementById('pinProcessing').innerHTML =
-        '<div style="font-size:2rem;margin-bottom:8px">📱</div>' +
-        '<div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>' +
-        '<div style="font-size:.78rem;color:#666;margin-bottom:12px">Check your phone and enter your M-Pesa PIN</div>' +
-        '<div style="display:flex;align-items:center;justify-content:center;gap:8px">' +
-        '<div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>' +
-        '<div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>' +
-        '<br><button onclick="confirmMpesa()" style="margin-top:10px;padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700">I have paid ✓</button>';
-      // Poll for payment status
-      if(data.invoice_id){
-        pollPaymentStatus(data.invoice_id);
-      }
+      showToast('STK Push sent! Check your phone');
+      document.getElementById('pinProcessing').innerHTML=
+        '<div style="font-size:2rem;margin-bottom:8px">📱</div>'+
+        '<div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>'+
+        '<div style="font-size:.78rem;color:#666;margin-bottom:12px">Enter your M-Pesa PIN on your phone</div>'+
+        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">'+
+        '<div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
+        '<div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>'+
+        '<button onclick="confirmMpesa()" style="padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:.85rem">I have paid ✓</button>';
+      if(data.invoice_id) pollPaymentStatus(data.invoice_id);
     } else {
-      console.error('STK Push failed:', data.message);
-      showToast('STK Push failed: ' + (data.message || 'Try again'));
-      document.getElementById('pinSection').style.display = 'block';
-      document.getElementById('pinProcessing').style.display = 'none';
-      mpesaPin = '';
-      updatePinDots();
+      showToast('STK failed: '+(data.message||'Try again'));
+      document.getElementById('pinSection').style.display='block';
+      document.getElementById('pinProcessing').style.display='none';
+      mpesaPin='';updatePinDots();
     }
   })
   .catch(function(err){
-    console.error('Swift-handler error:', err);
-    showToast('Network error - check connection');
-    document.getElementById('pinSection').style.display = 'block';
-    document.getElementById('pinProcessing').style.display = 'none';
-    mpesaPin = '';
-    updatePinDots();
+    console.error('STK error:',err);
+    showToast('Network error - try again');
+    document.getElementById('pinSection').style.display='block';
+    document.getElementById('pinProcessing').style.display='none';
+    mpesaPin='';updatePinDots();
   });
 }
 
 function pollPaymentStatus(invoiceId){
-  var attempts = 0;
-  var maxAttempts = 12; // Poll for 1 minute
-  var pollInterval = setInterval(function(){
+  var attempts=0;
+  var interval=setInterval(function(){
     attempts++;
-    if(attempts >= maxAttempts){
-      clearInterval(pollInterval);
-      // Ask user to confirm manually
-      document.getElementById('pinProcessing').innerHTML += '<br><button onclick="confirmMpesa()" style="margin-top:10px;padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700">I have paid ✓</button>';
-      return;
+    if(attempts>=12){
+      clearInterval(interval);return;
     }
-    fetch('https://payment.intasend.com/api/v1/payment/collection/' + invoiceId + '/', {
-      headers: { 'Authorization': 'Bearer ISPubKey_live_4db2603b-058f-44a9-8206-d85f640dcd21' }
+    fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'},
+      body:JSON.stringify({check_status:true,invoice_id:invoiceId})
     })
-    .then(function(r){ return r.json(); })
+    .then(function(r){return r.json();})
     .then(function(d){
-      var state = d.invoice ? d.invoice.state : d.state;
-      if(state === 'COMPLETE'){
-        clearInterval(pollInterval);
-        handlePaymentComplete({ tracking_id: invoiceId });
-      } else if(state === 'FAILED' || state === 'CANCELLED'){
-        clearInterval(pollInterval);
-        handlePaymentFailed({});
-      }
-    })
-    .catch(function(){ });
-  }, 5000);
-}
-
-function startPaymentTimer(){
-  setTimeout(function(){
-    document.getElementById('pinProcessing').style.display = 'none';
-    document.getElementById('pinSuccess').style.display = 'block';
-    setTimeout(function(){
-      document.getElementById('mpesaPopup').style.display = 'none';
-    }, 2500);
-  }, 4000);
+      if(d.state==='COMPLETE'){clearInterval(interval);handlePaymentComplete({tracking_id:invoiceId});}
+      else if(d.state==='FAILED'||d.state==='CANCELLED'){clearInterval(interval);handlePaymentFailed();}
+    }).catch(function(){});
+  },5000);
 }
 
 function handlePaymentComplete(res){
-  document.getElementById('pinProcessing').style.display = 'none';
-  document.getElementById('pinSuccess').style.display = 'block';
+  document.getElementById('pinProcessing').style.display='none';
+  document.getElementById('pinSuccess').style.display='block';
   showToast('Payment confirmed! KSh '+currentOrderAmount);
-  // Update payment status in Supabase
-  if(currentOrderId){
-    db.from('payments')
-      .update({status:'completed', transaction_id: res.tracking_id||'INTASEND'})
-      .eq('order_id', currentOrderId);
+  if(currentOrderId&&db){
+    db.from('payments').update({status:'completed',transaction_id:res.tracking_id||'PAID'}).eq('order_id',currentOrderId);
   }
-  setTimeout(function(){
-    document.getElementById('mpesaPopup').style.display = 'none';
-    mpesaPin = '';
-  }, 2500);
+  setTimeout(function(){document.getElementById('mpesaPopup').style.display='none';mpesaPin='';},2500);
 }
 
-function handlePaymentFailed(res){
-  document.getElementById('pinProcessing').style.display = 'none';
-  document.getElementById('pinSection').style.display = 'block';
-  mpesaPin = '';
-  updatePinDots();
+function handlePaymentFailed(){
+  document.getElementById('pinProcessing').style.display='none';
+  document.getElementById('pinSection').style.display='block';
+  mpesaPin='';updatePinDots();
   showToast('Payment failed. Try again.');
 }
 
-function cancelMpesa(){
-  document.getElementById('mpesaPopup').style.display = 'none';
-  mpesaPin = '';
-  showToast('Payment cancelled');
-}
+function cancelMpesa(){document.getElementById('mpesaPopup').style.display='none';mpesaPin='';showToast('Payment cancelled');}
+function confirmMpesa(){handlePaymentComplete({tracking_id:'MANUAL'});}
 
-function confirmMpesa(){
-  if(mpesaPin.length < 4){
-    showToast('Enter your 4-digit PIN');
-    return;
-  }
-  sendRealMpesaPayment();
+// ══════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════
+function setupRealtime(){
+  setInterval(function(){
+    try{
+      var kitchenPanel=document.getElementById('panel-restaurant');
+      if(kitchenPanel&&kitchenPanel.classList.contains('active')&&db){
+        loadOrdersFromDB();
+      }
+    }catch(e){}
+  },15000);
 }
 
 function showToast(msg){
@@ -1816,9 +1667,16 @@ function showToast(msg){
   setTimeout(function(){t.className='toast';},2500);
 }
 
-loadOrdersFromDB();
-setupRealtime();
+// ══════════════════════════════════════
+//  INIT
+// ══════════════════════════════════════
+window.addEventListener('load',function(){
+  initSupabase();
+  setupRealtime();
+});
+
 </script>
+
 
 <!-- INTASEND PAYMENT POPUP -->
 <div id="mpesaPopup" style="display:none;position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;">
