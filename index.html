@@ -782,52 +782,70 @@ function initSupabase(){
 // ══════════════════════════════════════
 //  DATABASE FUNCTIONS
 // ══════════════════════════════════════
-async function saveOrderToDB(order){
-  if(!db){ console.error('DB not ready'); return null; }
-  try{
-    // 1. Generate the frontend-matched short_id locally to send to the database
+async function saveOrderToDB(incomingOrder) {
+  if (!db) { 
+    console.error('DB not ready'); 
+    return null; 
+  }
+  try {
     const localShortId = 'ORD-' + Math.random().toString(36).substring(2, 10).toUpperCase();
 
-    var res = await db.from('orders').insert([{
-      customer_name: order.customer,
-      phone: order.phone,
-      delivery_address: order.address,
-      branch_name: order.branch,
-      total_price: order.total,
-      payment_method: order.payment,
+    const res = await db.from('orders').insert([{
+      customer_name: incomingOrder.customer,
+      phone: incomingOrder.phone,
+      delivery_address: incomingOrder.address,
+      branch_name: incomingOrder.branch,
+      total_price: incomingOrder.total,
+      payment_method: incomingOrder.payment,
       status: 'pending',
-      gps_lat: order.gps ? order.gps.lat : null,
-      gps_lng: order.gps ? order.gps.lng : null,
-      short_id: localShortId // Save the exact matching short ID to Supabase
+      gps_lat: incomingOrder.gps ? incomingOrder.gps.lat : null,
+      gps_lng: incomingOrder.gps ? incomingOrder.gps.lng : null,
+      short_id: localShortId
     }]).select();
 
-    if(res.error){ console.error('Order save error:',res.error.message); return null; }
-    var dbOrder = res.data[0];
+    if (res.error) { 
+      console.error('Order save error:', res.error.message); 
+      return null; 
+    }
     
-    // We attach the short_id so the frontend can read it immediately
-    order.id = dbOrder.id; 
-    order.short_id = dbOrder.short_id;
+    const dbOrder = res.data[0];
 
-    var items = order.items.map(function(item){
-      return {order_id:dbOrder.id, product_id:item.id, quantity:item.qty, price:item.price};
+    incomingOrder.id = dbOrder.id;
+    incomingOrder.short_id = dbOrder.short_id;
+
+    const items = incomingOrder.items.map(function(item) {
+      return {
+        order_id: dbOrder.id, 
+        product_id: item.id, 
+        quantity: item.qty, 
+        price: item.price
+      };
     });
-    
     await db.from('order_items').insert(items);
-    await db.from('kitchen_queue').insert([{order_id:dbOrder.id, status:'pending', short_id:dbOrder.short_id}]);
-    await db.from('payments').insert([{order_id:dbOrder.id, method:order.payment, amount:order.total, status:order.payment==='cash'?'completed':'pending'}]);
     
+    await db.from('kitchen_queue').insert([{
+      order_id: dbOrder.id, 
+      status: 'pending'
+    }]);
+
+    await db.from('payments').insert([{
+      order_id: dbOrder.id, 
+      method: incomingOrder.payment, 
+      amount: incomingOrder.total, 
+      status: incomingOrder.payment === 'cash' ? 'completed' : 'pending'
+    }]);
+
     console.log('Order saved! ID:', dbOrder.id, 'Short ID:', dbOrder.short_id);
-    
-    // Return the entire row object so your payment script doesn't throw "data is not defined"
     return dbOrder; 
-  }catch(e){ console.error('saveOrderToDB:',e); return null; }
+  } catch (e) { 
+    console.error('saveOrderToDB error:', e); 
+    return null; 
+  }
 }
 
-async function updateOrderInDB(id, status){
-  if(!db) return;
+async function updateOrderInDB(id, status) {
+  if (!db) return false;
   try {
-    // 1. Find the order first using either the long UUID OR the short_id 
-    // This makes the function bulletproof whether it's called with short or long ID.
     const { data: foundOrders, error: findError } = await db
       .from('orders')
       .select('id, short_id')
@@ -841,34 +859,32 @@ async function updateOrderInDB(id, status){
     const dbUUID = foundOrders[0].id;
     const dbShortId = foundOrders[0].short_id;
 
-    // 2. Update the orders table status using the reliable UUID
-    var res = await db.from('orders').update({status:status}).eq('id', dbUUID);
-    if(res.error){
+    const res = await db.from('orders').update({ status: status }).eq('id', dbUUID);
+    if (res.error) {
       console.error('Update error:', res.error.message);
       return false;
     }
 
-    // 3. Handle delivery specific updates using the correct database UUID
-    if(status==='out_for_delivery'){
+    if (status === 'out_for_delivery') {
       await db.from('deliveries').insert([{
         order_id: dbUUID,
         status: 'in_transit',
         assigned_at: new Date().toISOString()
       }]);
     }
-    if(status==='delivered'){
+    if (status === 'delivered') {
       await db.from('deliveries').update({
         status: 'delivered',
         delivered_at: new Date().toISOString()
       }).eq('order_id', dbUUID);
       
-      await db.from('payments').update({status:'completed'}).eq('order_id', dbUUID);
+      await db.from('payments').update({ status: 'completed' }).eq('order_id', dbUUID);
     }
     
     console.log('Order #' + dbShortId + ' updated to ' + status + ' in DB');
     return true;
-  }catch(e){
-    console.error('updateOrderInDB error:',e);
+  } catch (e) {
+    console.error('updateOrderInDB error:', e);
     return false;
   }
 }
@@ -887,13 +903,14 @@ async function loadOrdersFromDB(){
         var m = menuItems.find(function(x){ return x.id===it.product_id; });
         return {
           id: it.product_id,
-          name: m ? m.name : 'Item #'+it.product_id,
+          name: m ? m.name : 'Item',
           emoji: m ? m.emoji : '🍽️',
           price: parseFloat(it.price)||0,
           qty: parseInt(it.quantity)||1
         };
       });
-
+      // Map DB fields to app fields
+      // IMPORTANT: o.id stays as the real UUID for DB operations
       o.customer = o.customer_name || 'Customer';
       o.address = o.delivery_address || 'No address';
       o.branch = o.branch_name || 'Isiolo';
@@ -901,20 +918,26 @@ async function loadOrdersFromDB(){
       o.payment = o.payment_method || 'mpesa';
       o.gps = o.gps_lat ? {lat:o.gps_lat, lng:o.gps_lng} : null;
       o.time = new Date(o.created_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
-      
-      // Use the database's recorded short_id so the UI shows EXACTLY what is stored in Supabase
-      o.shortId = o.short_id || ('ORD-' + o.id.substring(0, 8).toUpperCase());
-      
+      // Short display ID
+      o.short_id = o.short_id || ('ORD-'+o.id.substring(0,8).toUpperCase());
       loadedOrders.push(o);
     }
     orders = loadedOrders;
-
     renderTracking();
     updateKitchenBadge();
     updateStats();
-
     var restPanel = document.getElementById('panel-restaurant');
-    if(restPan,
+    if(restPanel && restPanel.classList.contains('active')){
+      renderRestaurant();
+    }
+    var driverPanel = document.getElementById('panel-driver');
+    if(driverPanel && driverPanel.classList.contains('active')){
+      updateDriverPanel();
+    }
+    console.log('Loaded '+orders.length+' orders from Supabase');
+  }catch(e){ console.error('loadOrdersFromDB:',e); }
+}
+
 // ══════════════════════════════════════
 //  MENU DATA
 // ══════════════════════════════════════
@@ -992,9 +1015,6 @@ var catLabels = {
 
 // ══════════════════════════════════════
 //  APP STATE
-// ══════════════════════════════════════
-// ══════════════════════════════════════
-//  MULTI-USER STAFF ACCOUNTS
 // ══════════════════════════════════════
 var STAFF_ACCOUNTS = [
   // ADMIN
@@ -1074,31 +1094,24 @@ function selectLoginRole(tab,role){
 function doLogin(){
   var user=document.getElementById('loginUsername').value.trim();
   var pass=document.getElementById('loginPassword').value.trim();
-
-  // Find matching staff account
-  var account = STAFF_ACCOUNTS.find(function(a){
+  var account=STAFF_ACCOUNTS.find(function(a){
     return a.username===user && a.password===pass &&
-      (loginTargetRole==='admin' ? a.role==='admin' : a.role===loginTargetRole);
+      (loginTargetRole==='admin'?a.role==='admin':a.role===loginTargetRole);
   });
-
   if(account){
-    currentRole = account.role;
-    currentStaffUser = account;
-    // Set branch based on staff account
-    if(account.branch !== 'all'){
-      selectedBranch = account.branch;
-      var branchEl = document.getElementById('activeBranch');
-      if(branchEl) branchEl.textContent = account.branch;
+    currentRole=account.role;
+    currentStaffUser=account;
+    if(account.branch!=='all'){
+      selectedBranch=account.branch;
+      var branchEl=document.getElementById('activeBranch');
+      if(branchEl) branchEl.textContent=account.branch;
+      currentBranchFilter=account.branch;
     }
     document.getElementById('loginScreen').className='login-screen';
     document.getElementById('landing').style.display='none';
     document.getElementById('mainApp').className='app open';
     showStaffPanel(account.role);
     showToast('Welcome '+account.name+'!');
-    // Filter orders by branch automatically
-    if(account.branch !== 'all'){
-      currentBranchFilter = account.branch;
-    }
   } else {
     var err=document.getElementById('loginError');
     err.style.display='block';
@@ -1115,7 +1128,7 @@ function showStaffPanel(role){
   badge.className='user-badge show';
   var dot=document.getElementById('userRoleDot');
   var nameEl=document.getElementById('userBadgeName');
-  var displayName = currentStaffUser ? currentStaffUser.name : role;
+  var displayName=currentStaffUser?currentStaffUser.name:role;
   if(role==='kitchen'){dot.className='user-role-dot role-kitchen';nameEl.textContent=displayName;}
   if(role==='driver'){dot.className='user-role-dot role-driver';nameEl.textContent=displayName;}
   if(role==='admin'){dot.className='user-role-dot role-admin';nameEl.textContent=displayName;}
@@ -1151,55 +1164,42 @@ function goHome(){
 //  DEALS
 // ══════════════════════════════════════
 function renderDeals(){
-  var grid = document.getElementById('dealsGrid');
+  var grid=document.getElementById('dealsGrid');
   if(!grid) return;
-  var today = new Date().toLocaleDateString('en-US', {weekday:'long'});
-  var html = '';
+  var today=new Date().toLocaleDateString('en-US',{weekday:'long'});
+  var html='';
   deals.forEach(function(deal, idx){
-    var isToday = deal.day === today;
-    html += '<div class="deal-card" style="'+(isToday?'':'opacity:0.55;')+'">';
-    html += '<div class="deal-card-img">'+deal.emoji;
-    html += '<div class="deal-day-badge" style="background:'+(isToday?'#00a651':'#555')+'">'+(isToday?'TODAY ✅':deal.day)+'</div></div>';
-    html += '<div class="deal-card-info">';
-    html += '<div class="deal-card-name">'+deal.name+'</div>';
-    html += '<div class="deal-card-desc">'+deal.desc+'</div>';
-    html += '<div class="deal-card-footer">';
-    html += '<span class="deal-card-price">KSh '+deal.price.toLocaleString()+'</span>';
+    var isToday=deal.day===today;
+    html+='<div class="deal-card" style="'+(isToday?'':'opacity:0.55;')+'">';
+    html+='<div class="deal-card-img">'+deal.emoji;
+    html+='<div class="deal-day-badge" style="background:'+(isToday?'#00a651':'#555')+'">'+(isToday?'TODAY ✅':deal.day)+'</div></div>';
+    html+='<div class="deal-card-info">';
+    html+='<div class="deal-card-name">'+deal.name+'</div>';
+    html+='<div class="deal-card-desc">'+deal.desc+'</div>';
+    html+='<div class="deal-card-footer">';
+    html+='<span class="deal-card-price">KSh '+deal.price.toLocaleString()+'</span>';
     if(isToday){
-      html += '<button class="deal-claim-btn" onclick="claimDeal('+idx+')">Claim Now</button>';
+      html+='<button class="deal-claim-btn" onclick="claimDeal('+idx+')">Claim Now</button>';
     } else {
-      html += '<button style="padding:8px 14px;border-radius:8px;border:1px solid #444;background:#222;color:#555;font-size:.78rem;cursor:not-allowed;">'+deal.day+' Only</button>';
+      html+='<button style="padding:8px 14px;border-radius:8px;border:1px solid #444;background:#222;color:#555;font-size:.78rem;cursor:not-allowed;">'+deal.day+' Only</button>';
     }
-    html += '</div></div></div>';
+    html+='</div></div></div>';
   });
-  grid.innerHTML = html;
+  grid.innerHTML=html;
 }
 
 function claimDeal(idx){
-  var deal = deals[idx];
+  var deal=deals[idx];
   if(!deal) return;
-
-  // Only allow claiming on the correct day
-  var today = new Date().toLocaleDateString('en-US', {weekday:'long'});
-  if(deal.day !== today){
-    showToast('❌ '+deal.name+' is only available on '+deal.day+'!');
+  var today=new Date().toLocaleDateString('en-US',{weekday:'long'});
+  if(deal.day!==today){
+    showToast('❌ Only available on '+deal.day+'!');
     return;
   }
-
-  // Add to cart
-  var dealId = 'deal_'+idx;
-  var ex = cart.find(function(c){ return c.id===dealId; });
-  if(ex){ ex.qty++; }
-  else{
-    cart.push({
-      id:dealId,
-      name:deal.name,
-      emoji:deal.emoji,
-      price:deal.price,
-      qty:1,
-      soldOut:false
-    });
-  }
+  var dealId='deal_'+idx;
+  var ex=cart.find(function(c){return c.id===dealId;});
+  if(ex){ex.qty++;}
+  else{cart.push({id:dealId,name:deal.name,emoji:deal.emoji,price:deal.price,qty:1,soldOut:false});}
   updateCartUI();
   showToast(deal.emoji+' '+deal.name+' added to cart!');
   openCart();
@@ -1215,13 +1215,8 @@ function switchPanel(name,btn){
   });
   document.getElementById('panel-'+name).classList.add('active');
   if(btn) btn.classList.add('active');
-  if(name==='restaurant'){
-    // Always reload fresh orders from DB when opening kitchen
-    loadOrdersFromDB().then(function(){ renderRestaurant(); }).catch(function(){ renderRestaurant(); });
-  }
-  if(name==='driver'){
-    loadOrdersFromDB().then(function(){ updateDriverPanel(); }).catch(function(){ updateDriverPanel(); });
-  }
+  if(name==='restaurant') renderRestaurant();
+  if(name==='driver') updateDriverPanel();
   if(name==='admin') renderAdminMenu();
 }
 
@@ -1447,13 +1442,10 @@ function renderRestaurant(){
       gpsHtml='<div style="font-size:.7rem;color:#4CAF7D;margin-bottom:6px">GPS: '+order.gps.lat+', '+order.gps.lng+
         ' <a href="https://www.google.com/maps?q='+order.gps.lat+','+order.gps.lng+'" target="_blank" style="color:#C9A84C">Open Maps</a></div>';
     }
-    // Generate short readable order number
-    var orderNum = typeof order.id === 'string' && order.id.length > 10 ?
-      order.id.substring(0,8).toUpperCase() : order.id;
     html+='<div class="order-card"><div class="order-card-header">';
     html+='<div><b style="font-size:.9rem">'+order.customer+'</b>';
     html+='<div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+' · '+order.phone+'</div></div>';
-    html+='<span style="font-size:.76rem;color:var(--gold);font-weight:700">ORD-'+orderNum+'</span></div>';
+    html+='<span style="font-size:.76rem;color:var(--gold);font-weight:700">#'+order.id+'</span></div>';
     html+='<div class="order-items-list">'+order.items.map(function(i){
       return '<div class="order-item-row"><span>'+i.emoji+' '+i.name+'</span><span>x'+i.qty+' KSh '+(i.price*i.qty).toLocaleString()+'</span></div>';
     }).join('')+'</div>';
@@ -1466,51 +1458,34 @@ function renderRestaurant(){
 }
 
 async function updateStatus(id,status){
-  showToast('Updating order...');
-  var success = await updateOrderInDB(id,status);
-  if(success){
-    showToast('Order updated to '+status+'!');
-    // Wait 500ms for trigger to sync then reload
-    setTimeout(async function(){
-      await loadOrdersFromDB();
-      renderRestaurant();
-    }, 500);
-  } else {
-    showToast('Update failed - try again');
-    await loadOrdersFromDB();
-    renderRestaurant();
-  }
+  var o=orders.find(function(o){return o.id==id;});
+  if(!o)return;
+  o.status=status;
+  if(status==='delivered'){completedCount++;revenue+=o.total;}
+  renderRestaurant();renderTracking();updateKitchenBadge();
+  showToast('Order #'+id+' updated!');
+  await updateOrderInDB(id,status);
 }
 
 async function assignDriver(id){
+  var o=orders.find(function(o){return o.id==id;});
+  if(!o)return;
+  o.status='out_for_delivery';
+  renderRestaurant();renderTracking();updateDriverPanel();
+  showToast('Driver assigned to #'+id);
   await updateOrderInDB(id,'out_for_delivery');
-  showToast('Driver assigned!');
-  await loadOrdersFromDB();
-  renderRestaurant();
 }
 
 function updateStats(){
-  var pending = orders.filter(function(o){return o.status==='pending';}).length;
-  var preparing = orders.filter(function(o){return o.status==='preparing';}).length;
-  var completed = orders.filter(function(o){return o.status==='delivered';}).length;
-  var totalRevenue = orders.filter(function(o){return o.status==='delivered';})
-    .reduce(function(sum,o){return sum + (parseFloat(o.total)||0);}, 0);
-  document.getElementById('statPending').textContent = pending;
-  document.getElementById('statPreparing').textContent = preparing;
-  document.getElementById('statCompleted').textContent = completed;
-  document.getElementById('statRevenue').textContent = totalRevenue.toLocaleString();
+  document.getElementById('statPending').textContent=orders.filter(function(o){return o.status==='pending';}).length;
+  document.getElementById('statPreparing').textContent=orders.filter(function(o){return o.status==='preparing';}).length;
+  document.getElementById('statCompleted').textContent=completedCount;
+  document.getElementById('statRevenue').textContent=revenue.toLocaleString();
 }
 
 function switchOrderTab(btn,tab){
   document.querySelectorAll('.order-tab').forEach(function(t){t.classList.remove('active');});
-  btn.classList.add('active');
-  currentOrderTab=tab;
-  // Reload from DB to get latest status
-  loadOrdersFromDB().then(function(){
-    renderRestaurant();
-  }).catch(function(){
-    renderRestaurant();
-  });
+  btn.classList.add('active');currentOrderTab=tab;renderRestaurant();
 }
 
 function filterBranch(btn,branch){
@@ -1527,11 +1502,7 @@ function updateKitchenBadge(){
 //  DRIVER
 // ══════════════════════════════════════
 function updateDriverPanel(){
-  // Driver sees: out_for_delivery (assigned to them) or ready (waiting pickup)
-  var active=orders.find(function(o){
-    return o.status==='out_for_delivery' ||
-    (o.status==='ready' && currentStaffUser && o.branch===currentStaffUser.branch);
-  });
+  var active=orders.find(function(o){return o.status==='out_for_delivery';});
   if(active){
     document.getElementById('driverCustomerName').textContent=active.customer;
     document.getElementById('driverOrderItems').textContent=active.items.map(function(i){return i.name+' x'+i.qty;}).join(', ');
@@ -1565,54 +1536,26 @@ function loadGoogleMaps(custLat,custLng){
   var mapDiv=document.getElementById('googleMap');
   var lat=parseFloat(custLat);
   var lng=parseFloat(custLng);
-
-  // Show loading state
-  mapDiv.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;background:#141414"><div style="font-size:2.5rem">🗺️</div><div style="color:#C9A84C;font-size:.9rem;font-weight:600">Loading Navigation...</div><div style="color:#666;font-size:.75rem">Getting your location...</div></div>';
-
-  // Update the GPS info display
-  document.getElementById('customerGPSInfo').style.display='block';
-  document.getElementById('driverSeesGPS').textContent='Lat: '+custLat+' Lng: '+custLng;
-
-  // Set Google Maps navigation link
-  var navUrl='https://www.google.com/maps/dir/?api=1&destination='+lat+','+lng+'&travelmode=driving';
-  document.getElementById('openMapsLink').href=navUrl;
-  document.getElementById('openMapsLink').textContent='Open Google Maps Navigation →';
-
+  var restLat=0.3556;var restLng=37.5822;
+  mapDiv.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;background:#141414"><div style="font-size:2rem">🗺️</div><div style="color:#C9A84C;font-size:.85rem">Loading map...</div></div>';
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
       function(pos){
-        var dLat=pos.coords.latitude;
-        var dLng=pos.coords.longitude;
-        // Route from driver to customer
-        var src='https://maps.google.com/maps?saddr='+dLat+','+dLng+'&daddr='+lat+','+lng+'&output=embed&t=m&z=14';
-        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" style="border:0" src="'+src+'" allowfullscreen></iframe>';
-        // Update nav URL with driver start point
-        navUrl='https://www.google.com/maps/dir/?api=1&origin='+dLat+','+dLng+'&destination='+lat+','+lng+'&travelmode=driving';
+        var dLat=pos.coords.latitude;var dLng=pos.coords.longitude;
+        var src='https://maps.google.com/maps?saddr='+dLat+','+dLng+'&daddr='+lat+','+lng+'&output=embed&t=m';
+        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
+        var navUrl='https://www.google.com/maps/dir/?api=1&origin='+dLat+','+dLng+'&destination='+lat+','+lng+'&travelmode=driving';
         document.getElementById('openMapsLink').href=navUrl;
-        // Calculate rough distance
-        var R=6371;
-        var dLat2=(lat-dLat)*Math.PI/180;
-        var dLon2=(lng-dLng)*Math.PI/180;
-        var a=Math.sin(dLat2/2)*Math.sin(dLat2/2)+Math.cos(dLat*Math.PI/180)*Math.cos(lat*Math.PI/180)*Math.sin(dLon2/2)*Math.sin(dLon2/2);
-        var c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-        var dist=(R*c).toFixed(1);
-        var eta=Math.round(dist/0.5);
-        document.getElementById('etaNum').textContent=eta;
-        document.getElementById('distLeft').textContent=dist+' km';
-        document.getElementById('driverSpeed').textContent='~30 km/h';
       },
       function(){
-        // Fallback - show customer location only
-        var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15&markers=color:red%7C'+lat+','+lng;
-        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" style="border:0" src="'+src+'" allowfullscreen></iframe>';
-        document.getElementById('etaNum').textContent='~15';
-        document.getElementById('distLeft').textContent='See map';
+        var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
+        mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
       },
-      {enableHighAccuracy:true,timeout:10000,maximumAge:0}
+      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
     );
   } else {
     var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
-    mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" style="border:0" src="'+src+'" allowfullscreen></iframe>';
+    mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
   }
 }
 
@@ -1767,109 +1710,45 @@ function updatePinDots(){
 function sendRealMpesaPayment(){
   document.getElementById('pinSection').style.display='none';
   document.getElementById('pinProcessing').style.display='block';
-  document.getElementById('pinProcessing').innerHTML=
-    '<div style="font-size:2rem;margin-bottom:10px">⏳</div>'+
-    '<div style="font-size:.9rem;font-weight:700;color:#333">Sending STK Push...</div>'+
-    '<div style="font-size:.75rem;color:#888;margin-top:6px">Please wait</div>';
-
-  // Format phone to 254XXXXXXXXX
-  var phone=currentOrderPhone.toString().replace(/\D/g,'');
-  if(phone.startsWith('0')) phone='254'+phone.substring(1);
-  if(phone.startsWith('+')) phone=phone.substring(1);
-
-  console.log('STK Push - Phone:',phone,'Amount:',currentOrderAmount,'Order:',currentOrderId);
-
+  var phone=currentOrderPhone.toString().replace(/\s/g,'');
+  console.log('Sending STK Push via swift-handler...');
   fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler',{
     method:'POST',
     headers:{
       'Content-Type':'application/json',
       'Authorization':'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'
     },
-    body:JSON.stringify({
-      phone:phone,
-      amount:currentOrderAmount,
-      order_id:String(currentOrderId)
-    })
+    body:JSON.stringify({phone:phone,amount:currentOrderAmount,order_id:currentOrderId})
   })
   .then(function(res){return res.json();})
   .then(function(data){
     console.log('STK response:',JSON.stringify(data));
-
-    if(data.success && data.invoice_id){
-      // ✅ REAL STK PUSH SENT SUCCESSFULLY
+    if(data.success){
+      showToast('STK Push sent! Check your phone');
       document.getElementById('pinProcessing').innerHTML=
-        '<div style="font-size:2.5rem;margin-bottom:12px">📱</div>'+
-        '<div style="font-size:1rem;font-weight:800;color:#00a651;margin-bottom:6px">STK Push Sent!</div>'+
-        '<div style="font-size:.82rem;color:#333;margin-bottom:4px">Check your phone <b>'+currentOrderPhone+'</b></div>'+
-        '<div style="font-size:.78rem;color:#666;margin-bottom:16px">Enter your M-Pesa PIN when prompted</div>'+
-        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:20px">'+
-        '<div style="width:10px;height:10px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
-        '<div style="font-size:.82rem;color:#00a651;font-weight:700">Waiting for confirmation...</div></div>'+
-        '<button onclick="confirmMpesa()" style="width:100%;padding:13px;background:#00a651;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">✓ I Have Paid</button>'+
-        '<button onclick="cancelMpesa()" style="width:100%;padding:11px;background:#fff;color:#999;border:1px solid #ddd;border-radius:12px;font-size:.82rem;cursor:pointer">Cancel</button>';
+        '<div style="font-size:2rem;margin-bottom:8px">📱</div>'+
+        '<div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>'+
+        '<div style="font-size:.78rem;color:#666;margin-bottom:12px">Enter your M-Pesa PIN on your phone</div>'+
+        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">'+
+        '<div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
+        '<div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>'+
+        '<button onclick="confirmMpesa()" style="padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:.85rem">I have paid ✓</button>';
       if(data.invoice_id) pollPaymentStatus(data.invoice_id);
-
-    } else if(data.error && (
-      data.error.indexOf('not eligible')>-1 ||
-      data.error.indexOf('business')>-1 ||
-      data.error.indexOf('verification')>-1
-    )){
-      // ❌ INTASEND ACCOUNT NOT VERIFIED
-      document.getElementById('pinProcessing').innerHTML=
-        '<div style="font-size:2.5rem;margin-bottom:12px">⚠️</div>'+
-        '<div style="font-size:.95rem;font-weight:800;color:#e05a5a;margin-bottom:8px">Account Verification Needed</div>'+
-        '<div style="font-size:.78rem;color:#555;margin-bottom:16px;line-height:1.5">M-Pesa payments require IntaSend account verification. Please complete business verification at <b>app.intasend.com</b></div>'+
-        '<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:10px;padding:12px;margin-bottom:16px;font-size:.75rem;color:#856404">'+
-        '💡 While verification is pending, you can select <b>Cash on Delivery</b> to still accept orders!</div>'+
-        '<button onclick="cancelMpesa()" style="width:100%;padding:13px;background:#e05a5a;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">Close</button>'+
-        '<button onclick="switchToCash()" style="width:100%;padding:11px;background:#00a651;color:#fff;border:none;border-radius:12px;font-size:.85rem;cursor:pointer;font-weight:600">Switch to Cash Payment</button>';
-
-    } else if(data.error){
-      // ❌ OTHER ERROR
-      document.getElementById('pinProcessing').innerHTML=
-        '<div style="font-size:2.5rem;margin-bottom:12px">❌</div>'+
-        '<div style="font-size:.95rem;font-weight:800;color:#e05a5a;margin-bottom:8px">Payment Failed</div>'+
-        '<div style="font-size:.78rem;color:#555;margin-bottom:16px">'+( data.error||'Unknown error')+'</div>'+
-        '<button onclick="retryMpesa()" style="width:100%;padding:13px;background:#C9A84C;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">Try Again</button>'+
-        '<button onclick="cancelMpesa()" style="width:100%;padding:11px;background:#fff;color:#999;border:1px solid #ddd;border-radius:12px;font-size:.82rem;cursor:pointer">Cancel</button>';
-
     } else {
-      // ❌ UNEXPECTED RESPONSE
-      document.getElementById('pinProcessing').innerHTML=
-        '<div style="font-size:2.5rem;margin-bottom:12px">❓</div>'+
-        '<div style="font-size:.95rem;font-weight:800;color:#333;margin-bottom:8px">Check Your Phone</div>'+
-        '<div style="font-size:.78rem;color:#555;margin-bottom:16px">If you received an M-Pesa prompt, please complete the payment there</div>'+
-        '<button onclick="confirmMpesa()" style="width:100%;padding:13px;background:#00a651;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">✓ I Have Paid</button>'+
-        '<button onclick="cancelMpesa()" style="width:100%;padding:11px;background:#fff;color:#999;border:1px solid #ddd;border-radius:12px;font-size:.82rem;cursor:pointer">Cancel</button>';
+      showToast('STK failed: '+(data.message||'Try again'));
+      document.getElementById('pinSection').style.display='block';
+      document.getElementById('pinProcessing').style.display='none';
+      mpesaPin='';updatePinDots();
     }
   })
   .catch(function(err){
-    console.error('STK error:',err.message);
-    document.getElementById('pinProcessing').innerHTML=
-      '<div style="font-size:2.5rem;margin-bottom:12px">📶</div>'+
-      '<div style="font-size:.95rem;font-weight:800;color:#e05a5a;margin-bottom:8px">Connection Error</div>'+
-      '<div style="font-size:.78rem;color:#555;margin-bottom:16px">Could not reach payment server. Check your internet connection.</div>'+
-      '<button onclick="retryMpesa()" style="width:100%;padding:13px;background:#C9A84C;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">Try Again</button>'+
-      '<button onclick="cancelMpesa()" style="width:100%;padding:11px;background:#fff;color:#999;border:1px solid #ddd;border-radius:12px;font-size:.82rem;cursor:pointer">Cancel</button>';
+    console.error('STK error:',err);
+    showToast('Network error - try again');
+    document.getElementById('pinSection').style.display='block';
+    document.getElementById('pinProcessing').style.display='none';
+    mpesaPin='';updatePinDots();
   });
 }
-
-function retryMpesa(){
-  mpesaPin='';
-  document.getElementById('pinProcessing').style.display='none';
-  document.getElementById('pinSection').style.display='block';
-  updatePinDots();
-}
-
-function switchToCash(){
-  document.getElementById('mpesaPopup').style.display='none';
-  selectedPayment='cash';
-  document.querySelectorAll('.pay-method').forEach(function(m){m.classList.remove('active');});
-  var cashBtn=document.querySelector('.pay-method[onclick*="cash"]');
-  if(cashBtn) cashBtn.classList.add('active');
-  showToast('Switched to Cash on Delivery ✅');
-}
-
 
 function pollPaymentStatus(invoiceId){
   var attempts=0;
@@ -1925,23 +1804,6 @@ function setupRealtime(){
   },15000);
 }
 
-function switchAdminTab(btn, tab){
-  document.querySelectorAll('#panel-admin .order-tab').forEach(function(t){t.classList.remove('active');});
-  btn.classList.add('active');
-  if(tab==='menu'){
-    document.getElementById('itemForm').style.display='none';
-    document.getElementById('adminMenuList').style.display='block';
-    document.getElementById('staffPanel').style.display='none';
-    document.querySelector('.add-item-btn').style.display='block';
-  } else {
-    document.getElementById('itemForm').style.display='none';
-    document.getElementById('adminMenuList').style.display='none';
-    document.getElementById('staffPanel').style.display='block';
-    document.querySelector('.add-item-btn').style.display='none';
-    renderStaffList();
-  }
-}
-
 function renderStaffList(){
   var list = document.getElementById('staffList');
   var roleColors = {admin:'#C9A84C', kitchen:'#5A9BE0', driver:'#4CAF7D'};
@@ -1965,6 +1827,23 @@ function renderStaffList(){
   list.innerHTML = html;
 }
 
+function switchAdminTab(btn, tab){
+  document.querySelectorAll('#panel-admin .order-tab').forEach(function(t){t.classList.remove('active');});
+  btn.classList.add('active');
+  if(tab==='menu'){
+    document.getElementById('itemForm').style.display='none';
+    document.getElementById('adminMenuList').style.display='block';
+    document.getElementById('staffPanel').style.display='none';
+    document.querySelector('.add-item-btn').style.display='block';
+  } else {
+    document.getElementById('itemForm').style.display='none';
+    document.getElementById('adminMenuList').style.display='none';
+    document.getElementById('staffPanel').style.display='block';
+    document.querySelector('.add-item-btn').style.display='none';
+    renderStaffList();
+  }
+}
+
 function showToast(msg){
   var t=document.getElementById('toast');
   t.textContent=msg;t.className='toast show';
@@ -1980,6 +1859,7 @@ window.addEventListener('load',function(){
 });
 
 </script>
+
 
 
 <!-- INTASEND PAYMENT POPUP -->
