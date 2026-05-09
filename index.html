@@ -785,6 +785,9 @@ function initSupabase(){
 async function saveOrderToDB(order){
   if(!db){ console.error('DB not ready'); return null; }
   try{
+    // 1. Generate the frontend-matched short_id locally to send to the database
+    const localShortId = 'ORD-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+
     var res = await db.from('orders').insert([{
       customer_name: order.customer,
       phone: order.phone,
@@ -794,46 +797,75 @@ async function saveOrderToDB(order){
       payment_method: order.payment,
       status: 'pending',
       gps_lat: order.gps ? order.gps.lat : null,
-      gps_lng: order.gps ? order.gps.lng : null
+      gps_lng: order.gps ? order.gps.lng : null,
+      short_id: localShortId // Save the exact matching short ID to Supabase
     }]).select();
+
     if(res.error){ console.error('Order save error:',res.error.message); return null; }
     var dbOrder = res.data[0];
+    
+    // We attach the short_id so the frontend can read it immediately
+    order.id = dbOrder.id; 
+    order.short_id = dbOrder.short_id;
+
     var items = order.items.map(function(item){
       return {order_id:dbOrder.id, product_id:item.id, quantity:item.qty, price:item.price};
     });
+    
     await db.from('order_items').insert(items);
-    await db.from('kitchen_queue').insert([{order_id:dbOrder.id, status:'pending'}]);
+    await db.from('kitchen_queue').insert([{order_id:dbOrder.id, status:'pending', short_id:dbOrder.short_id}]);
     await db.from('payments').insert([{order_id:dbOrder.id, method:order.payment, amount:order.total, status:order.payment==='cash'?'completed':'pending'}]);
-    console.log('Order saved! ID:', dbOrder.id);
-    return dbOrder.id;
+    
+    console.log('Order saved! ID:', dbOrder.id, 'Short ID:', dbOrder.short_id);
+    
+    // Return the entire row object so your payment script doesn't throw "data is not defined"
+    return dbOrder; 
   }catch(e){ console.error('saveOrderToDB:',e); return null; }
 }
 
 async function updateOrderInDB(id, status){
   if(!db) return;
-  try{
-    // Update ONLY orders table - trigger syncs kitchen_queue automatically
-    var res = await db.from('orders').update({status:status}).eq('id',id);
+  try {
+    // 1. Find the order first using either the long UUID OR the short_id 
+    // This makes the function bulletproof whether it's called with short or long ID.
+    const { data: foundOrders, error: findError } = await db
+      .from('orders')
+      .select('id, short_id')
+      .or(`id.eq.${id},short_id.eq.${id}`);
+
+    if (findError || !foundOrders || foundOrders.length === 0) {
+      console.error('Could not find order to update with identifier:', id);
+      return false;
+    }
+
+    const dbUUID = foundOrders[0].id;
+    const dbShortId = foundOrders[0].short_id;
+
+    // 2. Update the orders table status using the reliable UUID
+    var res = await db.from('orders').update({status:status}).eq('id', dbUUID);
     if(res.error){
       console.error('Update error:', res.error.message);
       return false;
     }
-    // Handle delivery specific updates
+
+    // 3. Handle delivery specific updates using the correct database UUID
     if(status==='out_for_delivery'){
       await db.from('deliveries').insert([{
-        order_id:id,
-        status:'in_transit',
-        assigned_at:new Date().toISOString()
+        order_id: dbUUID,
+        status: 'in_transit',
+        assigned_at: new Date().toISOString()
       }]);
     }
     if(status==='delivered'){
       await db.from('deliveries').update({
-        status:'delivered',
-        delivered_at:new Date().toISOString()
-      }).eq('order_id',id);
-      await db.from('payments').update({status:'completed'}).eq('order_id',id);
+        status: 'delivered',
+        delivered_at: new Date().toISOString()
+      }).eq('order_id', dbUUID);
+      
+      await db.from('payments').update({status:'completed'}).eq('order_id', dbUUID);
     }
-    console.log('Order #'+id+' updated to '+status+' in DB');
+    
+    console.log('Order #' + dbShortId + ' updated to ' + status + ' in DB');
     return true;
   }catch(e){
     console.error('updateOrderInDB error:',e);
@@ -847,7 +879,6 @@ async function loadOrdersFromDB(){
     var res = await db.from('orders').select('*').order('created_at',{ascending:false});
     if(res.error){ console.error('Load error:',res.error.message); return; }
 
-    // Load items for each order
     var loadedOrders = [];
     for(var i=0;i<res.data.length;i++){
       var o = res.data[i];
@@ -862,7 +893,7 @@ async function loadOrdersFromDB(){
           qty: parseInt(it.quantity)||1
         };
       });
-      // Map DB columns to app fields
+
       o.customer = o.customer_name || 'Customer';
       o.address = o.delivery_address || 'No address';
       o.branch = o.branch_name || 'Isiolo';
@@ -870,33 +901,20 @@ async function loadOrdersFromDB(){
       o.payment = o.payment_method || 'mpesa';
       o.gps = o.gps_lat ? {lat:o.gps_lat, lng:o.gps_lng} : null;
       o.time = new Date(o.created_at).toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'});
-      // Keep short order number for display
-      o.shortId = '#' + o.created_at.substring(0,10).replace(/-/g,'');
+      
+      // Use the database's recorded short_id so the UI shows EXACTLY what is stored in Supabase
+      o.shortId = o.short_id || ('ORD-' + o.id.substring(0, 8).toUpperCase());
+      
       loadedOrders.push(o);
     }
     orders = loadedOrders;
 
-    // Refresh all UI
     renderTracking();
     updateKitchenBadge();
     updateStats();
 
-    // Only refresh restaurant if panel is active
     var restPanel = document.getElementById('panel-restaurant');
-    if(restPanel && restPanel.classList.contains('active')){
-      renderRestaurant();
-    }
-
-    // Check if driver has active delivery
-    var driverPanel = document.getElementById('panel-driver');
-    if(driverPanel && driverPanel.classList.contains('active')){
-      updateDriverPanel();
-    }
-
-    console.log('Loaded '+orders.length+' orders from Supabase');
-  }catch(e){ console.error('loadOrdersFromDB:',e); }
-}
-
+    if(restPan,
 // ══════════════════════════════════════
 //  MENU DATA
 // ══════════════════════════════════════
