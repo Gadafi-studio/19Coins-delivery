@@ -882,6 +882,7 @@ async function updateOrderInDB(id, status) {
     }
     
     console.log('Order #' + dbShortId + ' updated to ' + status + ' in DB');
+    window._lastUpdate = Date.now(); // Prevent polling from overwriting
     return true;
   } catch (e) {
     console.error('updateOrderInDB error:', e);
@@ -1040,6 +1041,12 @@ var STAFF_ACCOUNTS = [
 ];
 
 var currentStaffUser = null;
+// Real 19Coins Hotel GPS Coordinates
+var BRANCH_COORDS = {
+  'Isiolo': {lat: 0.350264, lng: 37.582963, name: '19Coins Hotel Isiolo', address: 'Road, Isiolo, Kenya'},
+  'Meru':   {lat: 0.046920, lng: 37.655411, name: '19Coins Hotel Meru', address: 'Njuri Ncheke Street, Meru, Kenya'}
+};
+
 var cart=[], orders=[], selectedPayment='mpesa', selectedBranch='Isiolo';
 var currentOrderTab='pending', currentBranchFilter='all';
 var orderIdCounter=1000, completedCount=0, revenue=0, activeCategory='all';
@@ -1458,13 +1465,29 @@ function renderRestaurant(){
 }
 
 async function updateStatus(id,status){
+  // Update UI immediately
   var o=orders.find(function(o){return o.id==id;});
   if(!o)return;
   o.status=status;
   if(status==='delivered'){completedCount++;revenue+=o.total;}
   renderRestaurant();renderTracking();updateKitchenBadge();
-  showToast('Order #'+id+' updated!');
-  await updateOrderInDB(id,status);
+  showToast('Updating order...');
+
+  // Update DB
+  var success = await updateOrderInDB(id,status);
+  if(success){
+    showToast('Order updated to '+status+'!');
+    // Wait 2 seconds for DB to fully commit then reload
+    setTimeout(async function(){
+      await loadOrdersFromDB();
+      renderRestaurant();
+    }, 2000);
+  } else {
+    showToast('Update failed - try again');
+    // Reload to get real status
+    await loadOrdersFromDB();
+    renderRestaurant();
+  }
 }
 
 async function assignDriver(id){
@@ -1536,7 +1559,9 @@ function loadGoogleMaps(custLat,custLng){
   var mapDiv=document.getElementById('googleMap');
   var lat=parseFloat(custLat);
   var lng=parseFloat(custLng);
-  var restLat=0.3556;var restLng=37.5822;
+  // Real 19Coins Hotel Isiolo coordinates
+  var restLat = selectedBranch==='Meru' ? 0.046920 : 0.350264;
+  var restLng = selectedBranch==='Meru' ? 37.655411 : 37.582963;
   mapDiv.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;background:#141414"><div style="font-size:2rem">🗺️</div><div style="color:#C9A84C;font-size:.85rem">Loading map...</div></div>';
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
@@ -1546,6 +1571,7 @@ function loadGoogleMaps(custLat,custLng){
         mapDiv.innerHTML='<iframe width="100%" height="100%" frameborder="0" src="'+src+'"></iframe>';
         var navUrl='https://www.google.com/maps/dir/?api=1&origin='+dLat+','+dLng+'&destination='+lat+','+lng+'&travelmode=driving';
         document.getElementById('openMapsLink').href=navUrl;
+        document.getElementById('openMapsLink').textContent='Navigate to Customer →';
       },
       function(){
         var src='https://maps.google.com/maps?q='+lat+','+lng+'&output=embed&z=15';
@@ -1794,14 +1820,19 @@ function confirmMpesa(){handlePaymentComplete({tracking_id:'MANUAL'});}
 //  UTILS
 // ══════════════════════════════════════
 function setupRealtime(){
+  // Poll every 30 seconds - longer interval prevents overwriting fresh updates
   setInterval(function(){
     try{
       var kitchenPanel=document.getElementById('panel-restaurant');
+      var now = Date.now();
+      // Don't reload if we just did an update in last 5 seconds
       if(kitchenPanel&&kitchenPanel.classList.contains('active')&&db){
-        loadOrdersFromDB();
+        if(!window._lastUpdate || (now - window._lastUpdate) > 5000){
+          loadOrdersFromDB();
+        }
       }
     }catch(e){}
-  },15000);
+  },30000);
 }
 
 function renderStaffList(){
