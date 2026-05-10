@@ -844,47 +844,47 @@ async function saveOrderToDB(incomingOrder) {
 }
 
 async function updateOrderInDB(id, status) {
-  if (!db) return false;
-  try {
-    const { data: foundOrders, error: findError } = await db
-      .from('orders')
-      .select('id, short_id')
-      .or(`id.eq.${id},short_id.eq.${id}`);
+  if(!db){ console.error('DB not ready'); return false; }
+  try{
+    console.log('Updating order:', id, 'to status:', status);
 
-    if (findError || !foundOrders || foundOrders.length === 0) {
-      console.error('Could not find order to update with identifier:', id);
-      return false;
+    // Directly update using the ID provided (should be real UUID)
+    var res = await db.from('orders')
+      .update({status: status})
+      .eq('id', id);
+
+    if(res.error){
+      console.error('Update failed:', res.error.message);
+      // Try with short_id as fallback
+      var res2 = await db.from('orders')
+        .update({status: status})
+        .eq('short_id', id);
+      if(res2.error){
+        console.error('Fallback also failed:', res2.error.message);
+        return false;
+      }
+      console.log('Updated via short_id fallback');
     }
 
-    const dbUUID = foundOrders[0].id;
-    const dbShortId = foundOrders[0].short_id;
-
-    const res = await db.from('orders').update({ status: status }).eq('id', dbUUID);
-    if (res.error) {
-      console.error('Update error:', res.error.message);
-      return false;
-    }
-
-    if (status === 'out_for_delivery') {
+    if(status==='out_for_delivery'){
       await db.from('deliveries').insert([{
-        order_id: dbUUID,
+        order_id: id,
         status: 'in_transit',
         assigned_at: new Date().toISOString()
       }]);
     }
-    if (status === 'delivered') {
+    if(status==='delivered'){
       await db.from('deliveries').update({
         status: 'delivered',
         delivered_at: new Date().toISOString()
-      }).eq('order_id', dbUUID);
-      
-      await db.from('payments').update({ status: 'completed' }).eq('order_id', dbUUID);
+      }).eq('order_id', id);
+      await db.from('payments').update({status:'completed'}).eq('order_id', id);
     }
-    
-    console.log('Order #' + dbShortId + ' updated to ' + status + ' in DB');
-    window._lastUpdate = Date.now(); // Prevent polling from overwriting
+
+    console.log('Order updated to', status, 'successfully!');
+    window._lastUpdate = Date.now();
     return true;
-  } catch (e) {
+  }catch(e){
     console.error('updateOrderInDB error:', e);
     return false;
   }
@@ -1471,13 +1471,19 @@ function renderRestaurant(){
 }
 
 async function updateStatus(id,status){
+  console.log('updateStatus called - id:', id, 'status:', status);
   // Find order by UUID or short_id
   var o=orders.find(function(o){
-    return o.id==id || o.short_id==id;
+    return String(o.id)==String(id) || String(o.short_id)==String(id);
   });
-  if(!o){ console.error('Order not found:', id); return; }
+  if(!o){
+    console.error('Order not found in local array. ID:', id);
+    console.log('Available orders:', orders.map(function(x){return x.id+'/'+x.short_id;}));
+    return;
+  }
   // Always use real UUID for DB operations
   var realId = o.id;
+  console.log('Found order, real UUID:', realId);
   o.status=status;
   if(status==='delivered'){completedCount++;revenue+=o.total;}
   renderRestaurant();renderTracking();updateKitchenBadge();
@@ -1535,34 +1541,96 @@ function updateKitchenBadge(){
 //  DRIVER
 // ══════════════════════════════════════
 function updateDriverPanel(){
-  var active=orders.find(function(o){return o.status==='out_for_delivery';});
+  // Get driver's branch from login
+  var driverBranch = currentStaffUser ? currentStaffUser.branch : selectedBranch;
+
+  // Show branch info in driver panel
+  var branchEl = document.getElementById('driverBranchBadge');
+  if(branchEl) branchEl.textContent = driverBranch + ' Branch';
+
+  // Only show orders from driver's own branch
+  // Driver sees: out_for_delivery OR ready orders from their branch
+  var active = orders.find(function(o){
+    return (o.status==='out_for_delivery' || o.status==='ready')
+      && o.branch === driverBranch;
+  });
+
   if(active){
-    document.getElementById('driverCustomerName').textContent=active.customer;
-    document.getElementById('driverOrderItems').textContent=active.items.map(function(i){return i.name+' x'+i.qty;}).join(', ');
-    document.getElementById('driverAmount').textContent='KSh '+active.total.toLocaleString();
-    document.getElementById('deliveryAddr').textContent=active.address;
-    document.getElementById('driverStatusText').textContent='En route to customer';
-    document.getElementById('driverSpeed').textContent='~30 km/h';
-    document.getElementById('etaNum').textContent='12';
-    document.getElementById('distLeft').textContent='2.4 km';
-    document.getElementById('driverActionBtn').onclick=function(){confirmDelivery(active.id);};
+    var dispId = active.short_id || ('ORD-'+String(active.id).substring(0,8).toUpperCase());
+    document.getElementById('driverCustomerName').textContent = active.customer;
+    document.getElementById('driverOrderItems').textContent = active.items.map(function(i){
+      return i.emoji+' '+i.name+' x'+i.qty;
+    }).join(', ');
+    document.getElementById('driverAmount').textContent = 'KSh '+active.total.toLocaleString();
+    document.getElementById('deliveryAddr').textContent = active.address || 'No address';
+    document.getElementById('driverStatusText').textContent = active.status==='ready' ?
+      '🟡 Order ready for pickup' : '🟢 En route to customer';
+    document.getElementById('driverSpeed').textContent = '~30 km/h';
+    document.getElementById('etaNum').textContent = '12';
+    document.getElementById('distLeft').textContent = '2.4 km';
+
+    // Action button
+    var actionBtn = document.getElementById('driverActionBtn');
+    if(active.status==='ready'){
+      actionBtn.textContent = '📦 Pick Up Order '+dispId;
+      actionBtn.style.background = 'linear-gradient(135deg,#C9A84C,#8B6914)';
+      actionBtn.onclick = function(){ pickupOrder(active.id); };
+    } else {
+      actionBtn.textContent = '✅ Confirm Delivery';
+      actionBtn.style.background = 'linear-gradient(135deg,#00a651,#007a3d)';
+      actionBtn.onclick = function(){ confirmDelivery(active.id); };
+    }
+
+    // Show GPS and map
     if(active.gps){
       document.getElementById('customerGPSInfo').style.display='block';
       document.getElementById('driverSeesGPS').textContent='Lat: '+active.gps.lat+' Lng: '+active.gps.lng;
       var mapsUrl='https://www.google.com/maps/dir/?api=1&destination='+active.gps.lat+','+active.gps.lng+'&travelmode=driving';
       document.getElementById('openMapsLink').href=mapsUrl;
-      loadGoogleMaps(active.gps.lat,active.gps.lng);
+      loadGoogleMaps(active.gps.lat, active.gps.lng);
+    } else {
+      document.getElementById('customerGPSInfo').style.display='none';
+      document.getElementById('googleMap').innerHTML=
+        '<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;background:#141414">'+
+        '<div style="font-size:2rem">📍</div>'+
+        '<div style="color:#C9A84C;font-size:.85rem">No GPS from customer</div>'+
+        '<div style="color:#555;font-size:.75rem">Ask customer for location</div></div>';
     }
+
+    // Call customer button
+    document.getElementById('callCustomerBtn') &&
+    (document.getElementById('callCustomerBtn').onclick = function(){
+      window.location.href = 'tel:'+active.phone;
+    });
+
   } else {
-    document.getElementById('driverCustomerName').textContent='No active delivery';
-    document.getElementById('driverOrderItems').textContent='Waiting for order...';
-    document.getElementById('driverAmount').textContent='--';
+    // No active orders for this branch
+    document.getElementById('driverCustomerName').textContent = 'No orders for '+driverBranch;
+    document.getElementById('driverOrderItems').textContent = 'Waiting for kitchen to mark orders ready...';
+    document.getElementById('driverAmount').textContent = '--';
     document.getElementById('customerGPSInfo').style.display='none';
-    document.getElementById('etaNum').textContent='--';
-    document.getElementById('distLeft').textContent='-- km';
-    document.getElementById('driverSpeed').textContent='';
-    document.getElementById('driverStatusText').textContent='Awaiting order assignment';
+    document.getElementById('etaNum').textContent = '--';
+    document.getElementById('distLeft').textContent = '-- km';
+    document.getElementById('driverSpeed').textContent = '';
+    document.getElementById('driverStatusText').textContent = 'Awaiting order from '+driverBranch+' kitchen';
+    document.getElementById('googleMap').innerHTML=
+      '<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px;background:#141414">'+
+      '<div style="font-size:3rem">🛵</div>'+
+      '<div style="color:#C9A84C;font-size:.9rem;font-weight:600">'+driverBranch+' Driver</div>'+
+      '<div style="color:#555;font-size:.78rem">Waiting for next delivery...</div></div>';
+    var actionBtn = document.getElementById('driverActionBtn');
+    if(actionBtn){
+      actionBtn.textContent = 'No Active Delivery';
+      actionBtn.style.background = '#333';
+      actionBtn.onclick = null;
+    }
   }
+}
+
+async function pickupOrder(id){
+  showToast('Order picked up! En route to customer...');
+  await updateStatus(id, 'out_for_delivery');
+  updateDriverPanel();
 }
 
 function loadGoogleMaps(custLat,custLng){
