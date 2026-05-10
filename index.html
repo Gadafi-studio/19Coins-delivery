@@ -912,6 +912,8 @@ async function loadOrdersFromDB(){
       });
       // Map DB fields to app fields
       // IMPORTANT: o.id stays as the real UUID for DB operations
+      // Keep real UUID as o.id for DB operations
+      o.short_id = o.short_id || ('ORD-'+o.id.substring(0,8).toUpperCase());
       o.customer = o.customer_name || 'Customer';
       o.address = o.delivery_address || 'No address';
       o.branch = o.branch_name || 'Isiolo';
@@ -1378,13 +1380,16 @@ async function placeOrder(){
     payment:selectedPayment, status:'pending', gps:customerGPS,
     time:new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})
   };
-  var savedId = await saveOrderToDB(order);
-  if(savedId){
-    order.id=savedId;
-    showToast('Order #'+savedId+' placed!');
+  var savedOrder = await saveOrderToDB(order);
+  if(savedOrder){
+    // saveOrderToDB returns full dbOrder object
+    order.id = savedOrder.id; // Real UUID for DB operations
+    order.short_id = savedOrder.short_id || ('ORD-'+savedOrder.id.substring(0,8).toUpperCase());
+    showToast('Order '+order.short_id+' placed!');
   } else {
-    order.id=++orderIdCounter;
-    showToast('Order #'+order.id+' placed (offline)');
+    order.id = 'local-'+Date.now();
+    order.short_id = 'ORD-LOCAL';
+    showToast('Order placed (offline mode)');
   }
   orders.unshift(order);
   cart=[];
@@ -1452,7 +1457,8 @@ function renderRestaurant(){
     html+='<div class="order-card"><div class="order-card-header">';
     html+='<div><b style="font-size:.9rem">'+order.customer+'</b>';
     html+='<div style="font-size:.7rem;color:var(--muted)">'+order.branch+' · '+order.time+' · '+order.phone+'</div></div>';
-    html+='<span style="font-size:.76rem;color:var(--gold);font-weight:700">#'+order.id+'</span></div>';
+    var dispId = order.short_id || ('ORD-'+String(order.id).substring(0,8).toUpperCase());
+    html+='<span style="font-size:.76rem;color:var(--gold);font-weight:700">'+dispId+'</span></div>';
     html+='<div class="order-items-list">'+order.items.map(function(i){
       return '<div class="order-item-row"><span>'+i.emoji+' '+i.name+'</span><span>x'+i.qty+' KSh '+(i.price*i.qty).toLocaleString()+'</span></div>';
     }).join('')+'</div>';
@@ -1465,16 +1471,20 @@ function renderRestaurant(){
 }
 
 async function updateStatus(id,status){
-  // Update UI immediately
-  var o=orders.find(function(o){return o.id==id;});
-  if(!o)return;
+  // Find order by UUID or short_id
+  var o=orders.find(function(o){
+    return o.id==id || o.short_id==id;
+  });
+  if(!o){ console.error('Order not found:', id); return; }
+  // Always use real UUID for DB operations
+  var realId = o.id;
   o.status=status;
   if(status==='delivered'){completedCount++;revenue+=o.total;}
   renderRestaurant();renderTracking();updateKitchenBadge();
   showToast('Updating order...');
 
   // Update DB
-  var success = await updateOrderInDB(id,status);
+  var success = await updateOrderInDB(realId,status);
   if(success){
     showToast('Order updated to '+status+'!');
     // Wait 2 seconds for DB to fully commit then reload
