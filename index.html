@@ -823,10 +823,12 @@ async function saveOrderToDB(incomingOrder) {
     });
     await db.from('order_items').insert(items);
     
-    await db.from('kitchen_queue').insert([{
-      order_id: dbOrder.id, 
+    var kqRes = await db.from('kitchen_queue').insert([{
+      order_id: dbOrder.id,
       status: 'pending'
     }]);
+    if(kqRes.error) console.error('kitchen_queue error:', kqRes.error.message);
+    else console.log('kitchen_queue created!');
 
     await db.from('payments').insert([{
       order_id: dbOrder.id, 
@@ -867,11 +869,18 @@ async function updateOrderInDB(id, status) {
     }
 
     if(status==='out_for_delivery'){
-      await db.from('deliveries').insert([{
+      var driverData = {
         order_id: id,
         status: 'in_transit',
         assigned_at: new Date().toISOString()
-      }]);
+      };
+      // Add driver_id if driver is logged in
+      if(currentStaffUser && currentStaffUser.role==='driver'){
+        driverData.driver_id = currentStaffUser.id;
+      }
+      var delRes = await db.from('deliveries').insert([driverData]);
+      if(delRes.error) console.error('deliveries insert error:', delRes.error.message);
+      else console.log('Delivery record created!');
     }
     if(status==='delivered'){
       await db.from('deliveries').update({
@@ -1043,6 +1052,27 @@ var STAFF_ACCOUNTS = [
 ];
 
 var currentStaffUser = null;
+// Delivery fee settings - loaded from DB
+var DELIVERY_FEE = 100;      // Total customer pays
+var DRIVER_FEE = 80;         // Driver gets
+var RESTAURANT_FEE = 20;     // Restaurant gets
+
+// Load delivery settings from DB
+async function loadRestaurantSettings(){
+  if(!db) return;
+  try{
+    var res = await db.from('restaurant_settings').select('*').limit(1);
+    if(res.data && res.data.length > 0){
+      var settings = res.data[0];
+      DELIVERY_FEE = parseInt(settings.delivery_fee) || 100;
+      DRIVER_FEE = parseInt(settings.driver_fee) || 80;
+      RESTAURANT_FEE = parseInt(settings.restaurant_fee) || 20;
+      console.log('Delivery fee loaded from DB: KSh', DELIVERY_FEE);
+      console.log('Driver fee: KSh', DRIVER_FEE, '| Restaurant fee: KSh', RESTAURANT_FEE);
+    }
+  }catch(e){ console.error('loadRestaurantSettings error:', e); }
+}
+
 // Real 19Coins Hotel GPS Coordinates
 var BRANCH_COORDS = {
   'Isiolo': {lat: 0.350264, lng: 37.582963, name: '19Coins Hotel Isiolo', address: 'Road, Isiolo, Kenya'},
@@ -1307,7 +1337,7 @@ function renderCartItems(){
   });
   el.innerHTML=html;
   var sub=cart.reduce(function(s,i){return s+i.price*i.qty;},0);
-  document.getElementById('cartTotalDisplay').textContent='KSh '+(sub+80).toLocaleString();
+  document.getElementById('cartTotalDisplay').textContent='KSh '+(sub+DELIVERY_FEE).toLocaleString()+' (incl. KSh '+DELIVERY_FEE+' delivery)';
 }
 
 function changeQty(id,d){
@@ -1376,7 +1406,7 @@ async function placeOrder(){
   showToast('Placing your order...');
   var order={
     customer:name, phone:phone, address:address,
-    branch:selectedBranch, items:cart.slice(), total:sub+80,
+    branch:selectedBranch, items:cart.slice(), total:sub+DELIVERY_FEE,
     payment:selectedPayment, status:'pending', gps:customerGPS,
     time:new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})
   };
@@ -1395,7 +1425,7 @@ async function placeOrder(){
   cart=[];
   updateCartUI();closeCart();renderTracking();updateKitchenBadge();
   if(selectedPayment==='mpesa'){
-    setTimeout(function(){showMpesaPopup(phone,sub+80,order.id);},1000);
+    setTimeout(function(){showMpesaPopup(phone,sub+DELIVERY_FEE,order.id);},1000);
   }
 }
 
@@ -1516,10 +1546,31 @@ async function assignDriver(id){
 }
 
 function updateStats(){
-  document.getElementById('statPending').textContent=orders.filter(function(o){return o.status==='pending';}).length;
-  document.getElementById('statPreparing').textContent=orders.filter(function(o){return o.status==='preparing';}).length;
-  document.getElementById('statCompleted').textContent=completedCount;
-  document.getElementById('statRevenue').textContent=revenue.toLocaleString();
+  var pending=orders.filter(function(o){return o.status==='pending';}).length;
+  var preparing=orders.filter(function(o){return o.status==='preparing';}).length;
+  var delivered=orders.filter(function(o){return o.status==='delivered';});
+  var completed=delivered.length;
+  var totalRevenue=delivered.reduce(function(s,o){return s+(parseFloat(o.total)||0);},0);
+  var driverRevenue=completed*DRIVER_FEE;
+  var restaurantRevenue=totalRevenue-driverRevenue;
+
+  document.getElementById('statPending').textContent=pending;
+  document.getElementById('statPreparing').textContent=preparing;
+  document.getElementById('statCompleted').textContent=completed;
+
+  // Revenue only visible to admin
+  var revEl=document.getElementById('statRevenue');
+  if(revEl) revEl.textContent=currentRole==='admin'?totalRevenue.toLocaleString():'--';
+
+  // Admin panel revenue cards
+  var adminTotal=document.getElementById('adminTotalRevenue');
+  var adminRest=document.getElementById('adminRestRevenue');
+  var adminDriver=document.getElementById('adminDriverRevenue');
+  var adminOrders=document.getElementById('adminCompletedOrders');
+  if(adminTotal) adminTotal.textContent='KSh '+totalRevenue.toLocaleString();
+  if(adminRest) adminRest.textContent='KSh '+restaurantRevenue.toLocaleString();
+  if(adminDriver) adminDriver.textContent='KSh '+driverRevenue.toLocaleString();
+  if(adminOrders) adminOrders.textContent=completed+' orders';
 }
 
 function switchOrderTab(btn,tab){
@@ -1965,6 +2016,7 @@ function showToast(msg){
 window.addEventListener('load',function(){
   initSupabase();
   setupRealtime();
+  setTimeout(loadRestaurantSettings, 2000);
 });
 
 </script>
