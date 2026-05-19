@@ -1838,16 +1838,47 @@ function showMpesaPopup(phone,amount,orderId){
   mpesaPin='';updatePinDots();
   document.getElementById('mpesaPhoneDisplay').textContent=phone;
   document.getElementById('mpesaAmountDisplay').textContent=amount.toLocaleString();
-  document.getElementById('pinSection').style.display='block';
+  document.getElementById('pinSection').style.display='none';
   document.getElementById('pinProcessing').style.display='none';
   document.getElementById('pinSuccess').style.display='none';
   document.getElementById('mpesaPopup').style.display='flex';
+
+  // Show sending screen immediately
+  document.getElementById('pinProcessing').style.display='block';
+  document.getElementById('pinProcessing').innerHTML=
+    '<div style="font-size:2.5rem;margin-bottom:12px">📱</div>'+
+    '<div style="font-size:.95rem;font-weight:700;color:#333;margin-bottom:6px">Sending M-Pesa Request...</div>'+
+    '<div style="font-size:.78rem;color:#666;margin-bottom:6px">Sending to: <b>'+phone+'</b></div>'+
+    '<div style="font-size:.78rem;color:#666;margin-bottom:16px">Amount: <b>KSh '+amount.toLocaleString()+'</b></div>'+
+    '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px">'+
+    '<div style="width:10px;height:10px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
+    '<div style="font-size:.82rem;color:#00a651;font-weight:600">Connecting to M-Pesa...</div></div>'+
+    '<button onclick="cancelMpesa()" style="width:100%;padding:10px;background:#fff;color:#999;border:1px solid #ddd;border-radius:10px;font-size:.82rem;cursor:pointer">Cancel</button>';
+
+  // Auto fire STK push after 1 second
+  setTimeout(function(){ sendRealMpesaPayment(); }, 1000);
 }
 
 function pinPress(num){
   if(mpesaPin.length>=4)return;
   mpesaPin+=num.toString();updatePinDots();
-  if(mpesaPin.length===4){setTimeout(function(){sendRealMpesaPayment();},300);}
+  if(mpesaPin.length===4){
+    setTimeout(function(){sendRealMpesaPayment();},300);
+  }
+}
+
+// Auto-send STK push without PIN pad
+function autoSendSTK(){
+  document.getElementById('pinSection').style.display='none';
+  document.getElementById('pinProcessing').style.display='block';
+  document.getElementById('pinProcessing').innerHTML=
+    '<div style="font-size:2.5rem;margin-bottom:12px">📱</div>'+
+    '<div style="font-size:.95rem;font-weight:700;color:#333;margin-bottom:6px">Sending M-Pesa Request...</div>'+
+    '<div style="font-size:.78rem;color:#666;margin-bottom:16px">Please wait while we send the payment request to your phone</div>'+
+    '<div style="display:flex;align-items:center;justify-content:center;gap:8px">'+
+    '<div style="width:10px;height:10px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
+    '<div style="font-size:.82rem;color:#00a651;font-weight:600">Connecting to M-Pesa...</div></div>';
+  sendRealMpesaPayment();
 }
 
 function pinDelete(){mpesaPin=mpesaPin.slice(0,-1);updatePinDots();}
