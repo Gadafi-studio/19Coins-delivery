@@ -1887,46 +1887,68 @@ function updatePinDots(){
 }
 
 function sendRealMpesaPayment(){
-  // pinSection removed - just ensure processing is visible
   var procEl = document.getElementById('pinProcessing');
   if(procEl) procEl.style.display='block';
-  var phone=currentOrderPhone.toString().replace(/\s/g,'');
-  console.log('MPESA: Sending STK Push to:', phone, 'Amount:', currentOrderAmount);
+
+  var phone = currentOrderPhone.toString().replace(/\s/g,'').replace(/[^0-9]/g,'');
+  if(phone.startsWith('0')) phone = '254' + phone.substring(1);
+  if(phone.startsWith('+')) phone = phone.substring(1);
+
+  console.log('MPESA STK Push - Phone:'+phone+' Amount:'+currentOrderAmount+' Order:'+currentOrderId);
+
   fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler',{
     method:'POST',
     headers:{
       'Content-Type':'application/json',
       'Authorization':'Bearer sb_publishable_sU3gIF6U5RGgHMwExyKi8w_fOaoMUPD'
     },
-    body:JSON.stringify({phone:phone,amount:currentOrderAmount,order_id:currentOrderId})
+    body:JSON.stringify({
+      phone: phone,
+      amount: currentOrderAmount,
+      order_id: String(currentOrderId)
+    })
   })
-  .then(function(res){return res.json();})
-  .then(function(data){
-    console.log('STK response:',JSON.stringify(data));
+  .then(function(res){
+    console.log('HTTP Status:', res.status);
+    return res.text();
+  })
+  .then(function(text){
+    console.log('Raw response:', text);
+    var data;
+    try{ data = JSON.parse(text); }
+    catch(e){ data = {success:false, error:text}; }
+
     if(data.success){
-      showToast('STK Push sent! Check your phone');
-      document.getElementById('pinProcessing').innerHTML=
-        '<div style="font-size:2rem;margin-bottom:8px">📱</div>'+
-        '<div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>'+
-        '<div style="font-size:.78rem;color:#666;margin-bottom:12px">Enter your M-Pesa PIN on your phone</div>'+
-        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">'+
-        '<div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
-        '<div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>'+
-        '<button onclick="confirmMpesa()" style="padding:10px 20px;background:#00a651;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:700;font-size:.85rem">I have paid ✓</button>';
+      showToast('STK Push sent! Check your phone 📱');
+      if(procEl) procEl.innerHTML=
+        '<div style="font-size:2.5rem;margin-bottom:12px">📱</div>'+
+        '<div style="font-size:.95rem;font-weight:700;color:#333;margin-bottom:6px">STK Push Sent!</div>'+
+        '<div style="font-size:.78rem;color:#666;margin-bottom:16px">Check your phone and enter your M-Pesa PIN</div>'+
+        '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:20px">'+
+        '<div style="width:10px;height:10px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>'+
+        '<div style="font-size:.82rem;color:#00a651;font-weight:600">Waiting for payment...</div></div>'+
+        '<button onclick="confirmMpesa()" style="width:100%;padding:13px;background:#00a651;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.9rem;cursor:pointer;margin-bottom:8px">I Have Paid ✓</button>'+
+        '<button onclick="cancelMpesa()" style="width:100%;padding:10px;background:#fff;color:#999;border:1px solid #ddd;border-radius:10px;font-size:.82rem;cursor:pointer">Cancel</button>';
       if(data.invoice_id) pollPaymentStatus(data.invoice_id);
     } else {
-      showToast('STK failed: '+(data.message||'Try again'));
-      document.getElementById('pinSection').style.display='block';
-      document.getElementById('pinProcessing').style.display='none';
-      mpesaPin='';updatePinDots();
+      showToast('Error: '+(data.error||data.message||'Try again'));
+      if(procEl) procEl.innerHTML=
+        '<div style="font-size:2rem;margin-bottom:8px">❌</div>'+
+        '<div style="font-size:.9rem;font-weight:700;color:#e05a5a;margin-bottom:8px">Payment Failed</div>'+
+        '<div style="font-size:.75rem;color:#555;margin-bottom:16px">'+(data.error||data.message||'Unknown error')+'</div>'+
+        '<button onclick="cancelMpesa()" style="width:100%;padding:12px;background:#e05a5a;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;margin-bottom:8px">Close</button>'+
+        '<button onclick="switchToCash()" style="width:100%;padding:10px;background:#00a651;color:#fff;border:none;border-radius:10px;font-size:.85rem;cursor:pointer">Switch to Cash</button>';
     }
   })
   .catch(function(err){
-    console.error('STK error:',err);
-    showToast('Network error - try again');
-    document.getElementById('pinSection').style.display='block';
-    document.getElementById('pinProcessing').style.display='none';
-    mpesaPin='';updatePinDots();
+    console.error('STK fetch error:', err.message);
+    showToast('Connection error - check internet');
+    if(procEl) procEl.innerHTML=
+      '<div style="font-size:2rem;margin-bottom:8px">📶</div>'+
+      '<div style="font-size:.9rem;font-weight:700;color:#e05a5a;margin-bottom:8px">Connection Error</div>'+
+      '<div style="font-size:.75rem;color:#555;margin-bottom:16px">'+err.message+'</div>'+
+      '<button onclick="sendRealMpesaPayment()" style="width:100%;padding:12px;background:#C9A84C;color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;margin-bottom:8px">Try Again</button>'+
+      '<button onclick="cancelMpesa()" style="width:100%;padding:10px;background:#fff;color:#999;border:1px solid #ddd;border-radius:10px;font-size:.82rem;cursor:pointer">Cancel</button>';
   });
 }
 
