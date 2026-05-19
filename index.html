@@ -1838,7 +1838,6 @@ function showMpesaPopup(phone,amount,orderId){
   mpesaPin='';updatePinDots();
   document.getElementById('mpesaPhoneDisplay').textContent=phone;
   document.getElementById('mpesaAmountDisplay').textContent=amount.toLocaleString();
-  document.getElementById('pinSection').style.display='none';
   document.getElementById('pinProcessing').style.display='none';
   document.getElementById('pinSuccess').style.display='none';
   document.getElementById('mpesaPopup').style.display='flex';
@@ -2054,74 +2053,50 @@ window.addEventListener('load',function(){
 
 
 
-<!-- INTASEND PAYMENT POPUP -->
-<div id="mpesaPopup" style="display:none;position:fixed;inset:0;z-index:999;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;">
-  <div style="background:#fff;border-radius:16px;padding:0;width:88%;max-width:340px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,0.5);">
-    <!-- Header -->
-    <div style="background:#00a651;padding:20px;text-align:center;">
-      <div style="color:#fff;font-size:1.4rem;font-weight:900;letter-spacing:1px;">M-PESA</div>
-      <div style="color:rgba(255,255,255,0.85);font-size:.75rem;margin-top:2px;">Powered by IntaSend · Safaricom</div>
+<!-- MPESA PAYMENT POPUP -->
+<div id="mpesaPopup" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:20px;padding:0;width:92%;max-width:360px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,0.6);">
+
+    <!-- Green Header -->
+    <div style="background:linear-gradient(135deg,#00a651,#007a3d);padding:22px 20px;text-align:center;">
+      <div style="color:#fff;font-size:1.5rem;font-weight:900;letter-spacing:2px">M-PESA</div>
+      <div style="color:rgba(255,255,255,0.8);font-size:.72rem;margin-top:3px">Powered by Safaricom · Secured by IntaSend</div>
     </div>
-    <!-- Content -->
-    <div style="padding:20px;text-align:center;">
-      <div style="font-size:.85rem;color:#333;margin-bottom:6px;">Sending STK Push to</div>
-      <div style="font-size:1.1rem;font-weight:700;color:#00a651" id="mpesaPhoneDisplay">07XX XXX XXX</div>
-      <div style="margin:14px 0;padding:14px;background:#f5f5f5;border-radius:10px;">
-        <div style="font-size:.72rem;color:#888;margin-bottom:4px;">AMOUNT</div>
-        <div style="font-size:1.6rem;font-weight:900;color:#333">KSh <span id="mpesaAmountDisplay">0</span></div>
-        <div style="font-size:.7rem;color:#888;margin-top:4px;">19Coins Hotel · Delivery Payment</div>
-      </div>
 
-      <!-- PIN DOTS -->
-      <div id="pinSection">
-        <div style="font-size:.78rem;color:#555;margin-bottom:8px;">Enter your <b>M-Pesa PIN</b> to authorize</div>
-        <div style="display:flex;justify-content:center;gap:10px;margin-bottom:12px;" id="pinDots">
-          <div id="pd1" style="width:14px;height:14px;border-radius:50%;border:2px solid #ccc;background:#fff;transition:.2s"></div>
-          <div id="pd2" style="width:14px;height:14px;border-radius:50%;border:2px solid #ccc;background:#fff;transition:.2s"></div>
-          <div id="pd3" style="width:14px;height:14px;border-radius:50%;border:2px solid #ccc;background:#fff;transition:.2s"></div>
-          <div id="pd4" style="width:14px;height:14px;border-radius:50%;border:2px solid #ccc;background:#fff;transition:.2s"></div>
-        </div>
-        <!-- NUMBER PAD -->
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:240px;margin:0 auto;">
-          <button onclick="pinPress(1)" class="pin-btn">1</button>
-          <button onclick="pinPress(2)" class="pin-btn">2<div style="font-size:.45rem;color:#888">ABC</div></button>
-          <button onclick="pinPress(3)" class="pin-btn">3<div style="font-size:.45rem;color:#888">DEF</div></button>
-          <button onclick="pinPress(4)" class="pin-btn">4<div style="font-size:.45rem;color:#888">GHI</div></button>
-          <button onclick="pinPress(5)" class="pin-btn">5<div style="font-size:.45rem;color:#888">JKL</div></button>
-          <button onclick="pinPress(6)" class="pin-btn">6<div style="font-size:.45rem;color:#888">MNO</div></button>
-          <button onclick="pinPress(7)" class="pin-btn">7<div style="font-size:.45rem;color:#888">PQRS</div></button>
-          <button onclick="pinPress(8)" class="pin-btn">8<div style="font-size:.45rem;color:#888">TUV</div></button>
-          <button onclick="pinPress(9)" class="pin-btn">9<div style="font-size:.45rem;color:#888">WXYZ</div></button>
-          <button onclick="cancelMpesa()" style="padding:12px;border-radius:10px;border:1px solid #ddd;background:#fff;color:#E05A5A;font-size:.8rem;cursor:pointer;font-weight:600;">Cancel</button>
-          <button onclick="pinPress(0)" class="pin-btn">0</button>
-          <button onclick="pinDelete()" style="padding:12px;border-radius:10px;border:1px solid #ddd;background:#fff;color:#333;font-size:1rem;cursor:pointer;">⌫</button>
-        </div>
-      </div>
-
-      <!-- PROCESSING -->
-      <div id="pinProcessing" style="display:none;padding:16px 0;text-align:center">
-        <div style="font-size:2rem;margin-bottom:8px">📱</div>
-        <div style="font-size:.88rem;font-weight:700;color:#333;margin-bottom:4px">STK Push Sent!</div>
-        <div style="font-size:.78rem;color:#666;margin-bottom:12px">Check your phone for the M-Pesa prompt and enter your PIN there</div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
-          <div style="width:8px;height:8px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>
-          <div style="font-size:.8rem;color:#00a651;font-weight:600">Waiting for payment...</div>
-        </div>
-      </div>
-
-      <!-- SUCCESS -->
-      <div id="pinSuccess" style="display:none;padding:16px 0;text-align:center">
-        <div style="font-size:3rem;margin-bottom:8px">✅</div>
-        <div style="font-size:.95rem;font-weight:700;color:#00a651">Payment Confirmed!</div>
-        <div style="font-size:.78rem;color:#666;margin-top:4px">Your order is being processed</div>
-      </div>
-
+    <!-- Amount Display -->
+    <div style="padding:20px;text-align:center;background:#f9f9f9;border-bottom:1px solid #eee;">
+      <div style="font-size:.78rem;color:#888;margin-bottom:4px">PAYMENT TO</div>
+      <div style="font-size:1rem;font-weight:700;color:#333;margin-bottom:8px">19Coins Hotel</div>
+      <div style="font-size:.75rem;color:#888;margin-bottom:4px">AMOUNT</div>
+      <div style="font-size:2.2rem;font-weight:900;color:#00a651;margin-bottom:4px">KSh <span id="mpesaAmountDisplay">0</span></div>
+      <div style="font-size:.72rem;color:#aaa;margin-bottom:4px">Sending to: <span id="mpesaPhoneDisplay" style="color:#333;font-weight:600">07XX XXX XXX</span></div>
     </div>
+
+    <!-- Processing / Status Section -->
+    <div style="padding:24px 20px;">
+      <div id="pinProcessing" style="text-align:center;">
+        <div style="font-size:2.5rem;margin-bottom:12px">📱</div>
+        <div style="font-size:.95rem;font-weight:700;color:#333;margin-bottom:6px">Sending M-Pesa Request...</div>
+        <div style="font-size:.78rem;color:#666;margin-bottom:16px">Please wait while we connect to M-Pesa</div>
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:20px">
+          <div style="width:10px;height:10px;border-radius:50%;background:#00a651;animation:mpesaPulse 1s infinite"></div>
+          <div style="font-size:.82rem;color:#00a651;font-weight:600">Connecting...</div>
+        </div>
+        <button onclick="cancelMpesa()" style="width:100%;padding:11px;background:#fff;color:#999;border:1px solid #ddd;border-radius:10px;font-size:.82rem;cursor:pointer">Cancel</button>
+      </div>
+
+      <!-- Success -->
+      <div id="pinSuccess" style="display:none;text-align:center;">
+        <div style="font-size:3rem;margin-bottom:12px">✅</div>
+        <div style="font-size:1rem;font-weight:800;color:#00a651;margin-bottom:6px">Payment Confirmed!</div>
+        <div style="font-size:.78rem;color:#666;">Your order is being prepared</div>
+      </div>
+    </div>
+
   </div>
 </div>
+
 <style>
-  .pin-btn{padding:12px;border-radius:10px;border:1px solid #ddd;background:#fff;color:#333;font-size:1rem;font-weight:700;cursor:pointer;line-height:1.2;transition:.15s;}
-  .pin-btn:active{background:#00a651;color:#fff;border-color:#00a651;}
   @keyframes mpesaPulse{0%,100%{opacity:1}50%{opacity:.3}}
 </style>
 
