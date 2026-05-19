@@ -1883,13 +1883,7 @@ function autoSendSTK(){
 function pinDelete(){mpesaPin=mpesaPin.slice(0,-1);updatePinDots();}
 
 function updatePinDots(){
-  for(var i=1;i<=4;i++){
-    var dot=document.getElementById('pd'+i);
-    if(dot){
-      dot.style.background=i<=mpesaPin.length?'#00a651':'#fff';
-      dot.style.borderColor=i<=mpesaPin.length?'#00a651':'#ccc';
-    }
-  }
+  // PIN dots removed - no-op function kept for compatibility
 }
 
 function sendRealMpesaPayment(){
