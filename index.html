@@ -1887,10 +1887,11 @@ function updatePinDots(){
 }
 
 function sendRealMpesaPayment(){
-  document.getElementById('pinSection').style.display='none';
-  document.getElementById('pinProcessing').style.display='block';
+  // pinSection removed - just ensure processing is visible
+  var procEl = document.getElementById('pinProcessing');
+  if(procEl) procEl.style.display='block';
   var phone=currentOrderPhone.toString().replace(/\s/g,'');
-  console.log('Sending STK Push via swift-handler...');
+  console.log('MPESA: Sending STK Push to:', phone, 'Amount:', currentOrderAmount);
   fetch('https://aubkxxezzoprpmluwlau.supabase.co/functions/v1/swift-handler',{
     method:'POST',
     headers:{
